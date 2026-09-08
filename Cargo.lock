@@ -113,9 +113,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.102"
+version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "arrayvec"
@@ -159,6 +159,8 @@ dependencies = [
  "cexpr",
  "clang-sys",
  "itertools",
+ "log",
+ "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
@@ -713,9 +715,9 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "libc"
-version = "0.2.185"
+version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52ff2c0fe9bc6cb6b14a0592c2ff4fa9ceb83eea9db979b0487cd054946a2b8f"
+checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "libloading"
@@ -791,6 +793,12 @@ checksum = "d640282b302c0bb0a2a8e0233ead9035e3bed871f0b7e81fe4a1ec829765db44"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "mach2"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 
 [[package]]
 name = "mach_o_sys"
@@ -991,7 +999,21 @@ dependencies = [
  "bindgen 0.70.1",
  "libc",
  "libproc",
- "mach2",
+ "mach2 0.4.3",
+ "winapi",
+]
+
+[[package]]
+name = "proc-maps"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "221de5f6ef11b9be9d59b330c5b81799b3e7c51b18af84c1f235ef88998b00e1"
+dependencies = [
+ "anyhow",
+ "bindgen 0.72.1",
+ "libc",
+ "libproc",
+ "mach2 0.6.0",
  "winapi",
 ]
 
@@ -1017,7 +1039,7 @@ dependencies = [
  "memmap2",
  "num-traits",
  "page_size",
- "proc-maps",
+ "proc-maps 0.4.0",
  "py-spy-testdata",
  "rand",
  "rand_distr",
@@ -1108,14 +1130,14 @@ dependencies = [
 
 [[package]]
 name = "read-process-memory"
-version = "0.1.6"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8497683b2f0b6887786f1928c118f26ecc6bb3d78bbb6ed23e8e7ba110af3bb0"
+checksum = "98379bd2cb26a9ad7d0af215816348a41279285fd15e40b398af97108207a9d3"
 dependencies = [
  "libc",
  "log",
- "mach",
- "winapi",
+ "mach2 0.6.0",
+ "windows-sys",
 ]
 
 [[package]]
@@ -1158,9 +1180,8 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "remoteprocess"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1861c221cfbe6c963fd804eb56c64c0fa25d133b06537ac6cba7ca56085ae556"
+version = "0.5.3"
+source = "git+https://github.com/grafana/pyroscope-remoteprocess?rev=37581ef8bd98d835f953676448aee7b29b24111a#37581ef8bd98d835f953676448aee7b29b24111a"
 dependencies = [
  "addr2line",
  "cfg-if",
@@ -1174,7 +1195,7 @@ dependencies = [
  "memmap2",
  "nix",
  "object",
- "proc-maps",
+ "proc-maps 0.5.0",
  "read-process-memory",
  "regex",
  "winapi",
