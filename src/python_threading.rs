@@ -25,6 +25,8 @@ pub fn thread_names_from_interpreter<I: InterpreterState, P: ProcessMemory>(
 ) -> Result<HashMap<u64, String>, Error> {
     let modules_ptr_ptr = match debug_offsets {
         Some(offsets) => {
+            // I::modules_ptr_ptr uses the 3.14.0 layout, but Python 3.14.7's larger
+            // GC state moves imports.modules. Use the target's reported offset.
             (interpreter_address + offsets.imports_modules()) as *const *const I::Object
         }
         None => I::modules_ptr_ptr(interpreter_address),
