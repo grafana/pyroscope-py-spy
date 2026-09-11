@@ -354,7 +354,8 @@ macro_rules! CompactCodeObjectImpl {
                         }
                     };
                     line_number += line_delta as i32;
-                    if bytecode_address >= lasti {
+                    // Line-table ranges exclude their end offset.
+                    if bytecode_address > lasti {
                         break;
                     }
                 }
@@ -930,6 +931,31 @@ mod tests {
             22, 208, 4, 22,
         ];
         assert_eq!(code.get_line_number(214, &table), 5);
+    }
+
+    #[test]
+    fn test_compact_line_number_boundaries() {
+        // Python 3.14's co_linetable for tests/scripts/recursive.py. co_lines()
+        // reports half-open ranges: [0, 2): 0, [2, 8): 1, [8, 10): 7,
+        // [10, 30): 8. Check every instruction, including range boundaries.
+        let table = [
+            240, 3, 1, 1, 1, 242, 2, 3, 1, 17, 240, 12, 0, 7, 11, 217, 4, 11, 136, 66, 134, 75,
+        ];
+        let code = v3_14_0::PyCodeObject {
+            co_firstlineno: 1,
+            ..Default::default()
+        };
+        let code_offset = std::mem::offset_of!(v3_14_0::PyCodeObject, co_code_adaptive) as i32;
+        for (start, end, line) in [(0, 2, 0), (2, 8, 1), (8, 10, 7), (10, 30, 8)] {
+            for offset in (start..end).step_by(2) {
+                assert_eq!(
+                    code.get_line_number(code_offset + offset, &table),
+                    line,
+                    "incorrect line for bytecode offset {}",
+                    offset
+                );
+            }
+        }
     }
 
     #[test]
