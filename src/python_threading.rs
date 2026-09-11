@@ -22,9 +22,6 @@ pub fn thread_names_from_interpreter<I: InterpreterState, P: ProcessMemory>(
     version: &Version,
 ) -> Result<HashMap<u64, String>, Error> {
     let modules_ptr_ptr = if version.major == 3 && version.minor == 14 {
-        // Maintenance releases can change the interpreter layout after `runtime`
-        // (for example, by growing the GC state). Read the modules offset from
-        // the target's debug offsets instead of using the 3.14.0 layout.
         let runtime: usize = process.copy_struct(
             interpreter_address + std::mem::offset_of!(v3_14_0::PyInterpreterState, runtime),
         )?;

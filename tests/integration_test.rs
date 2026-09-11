@@ -192,11 +192,7 @@ fn test_recursive() {
 
         let top_level_frame = &trace.frames[trace.frames.len() - 1];
         assert_eq!(top_level_frame.name, "<module>");
-        assert!(
-            (top_level_frame.line == 8) || (top_level_frame.line == 7),
-            "unexpected module frame: {:?}",
-            top_level_frame
-        );
+        assert!((top_level_frame.line == 8) || (top_level_frame.line == 7));
 
         std::thread::sleep(std::time::Duration::from_millis(5));
     }

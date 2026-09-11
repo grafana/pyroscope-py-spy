@@ -354,7 +354,6 @@ macro_rules! CompactCodeObjectImpl {
                         }
                     };
                     line_number += line_delta as i32;
-                    // Line-table ranges exclude their end offset.
                     if bytecode_address > lasti {
                         break;
                     }
@@ -935,9 +934,6 @@ mod tests {
 
     #[test]
     fn test_compact_line_number_boundaries() {
-        // Python 3.14's co_linetable for tests/scripts/recursive.py. co_lines()
-        // reports half-open ranges: [0, 2): 0, [2, 8): 1, [8, 10): 7,
-        // [10, 30): 8. Check every instruction, including range boundaries.
         let table = [
             240, 3, 1, 1, 1, 242, 2, 3, 1, 17, 240, 12, 0, 7, 11, 217, 4, 11, 136, 66, 134, 75,
         ];

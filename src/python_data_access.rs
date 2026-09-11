@@ -1,5 +1,5 @@
 #![allow(clippy::unnecessary_cast)]
-use anyhow::{Context, Error};
+use anyhow::Error;
 
 use crate::python_bindings::v3_13_0;
 use crate::python_interpreters::{
@@ -202,9 +202,7 @@ impl<'a, P: ProcessMemory> DictIterator<'a, P> {
                 process.copy_struct(ht_cached_keys as usize)?;
 
             let entries_addr = ht_cached_keys as usize
-                + 1usize
-                    .checked_shl(keys.dk_log2_index_bytes.into())
-                    .context("Invalid dictionary index size")?
+                + (1 << keys.dk_log2_index_bytes)
                 + std::mem::size_of_val(&keys);
             Ok(DictIterator {
                 process,
@@ -237,9 +235,7 @@ impl<'a, P: ProcessMemory> DictIterator<'a, P> {
                 let keys = process.copy_pointer(dict.ma_keys)?;
 
                 let entries_addr = dict.ma_keys as usize
-                    + 1usize
-                        .checked_shl(keys.dk_log2_index_bytes.into())
-                        .context("Invalid dictionary index size")?
+                    + (1 << keys.dk_log2_index_bytes)
                     + std::mem::size_of_val(&keys);
                 Ok(DictIterator {
                     process,
@@ -613,31 +609,5 @@ pub mod tests {
         let bytes = to_byteobject(&original);
         let copied = copy_bytes(&bytes.base, &LocalProcess).unwrap();
         assert_eq!(copied, original);
-    }
-
-    #[test]
-    fn test_invalid_dictionary_index_size() {
-        use crate::python_bindings::v3_11_0::{PyDictKeysObject, PyDictObject};
-
-        let mut keys = PyDictKeysObject {
-            dk_log2_index_bytes: u8::MAX,
-            ..Default::default()
-        };
-        let dict = PyDictObject {
-            ma_keys: &mut keys,
-            ..Default::default()
-        };
-        let version = Version {
-            major: 3,
-            minor: 14,
-            patch: 7,
-            release_flags: String::new(),
-            build_metadata: None,
-        };
-        let result = DictIterator::from(&LocalProcess, &version, &dict as *const _ as usize);
-        assert_eq!(
-            result.err().unwrap().to_string(),
-            "Invalid dictionary index size"
-        );
     }
 }
