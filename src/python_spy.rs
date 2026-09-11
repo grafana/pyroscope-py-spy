@@ -4,6 +4,7 @@ use std::collections::HashSet;
 #[cfg(all(target_os = "linux", feature = "unwind"))]
 use std::iter::FromIterator;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use anyhow::{Context, Error, Result};
 use remoteprocess::{Pid, Process, ProcessMemory, Tid};
@@ -37,6 +38,7 @@ pub struct PythonSpy {
     pub short_filenames: HashMap<String, Option<String>>,
     pub python_thread_ids: HashMap<u64, Tid>,
     pub python_thread_names: HashMap<u64, String>,
+    pub(crate) python_modules_offset: OnceLock<usize>,
     #[cfg(target_os = "linux")]
     pub dockerized: bool,
 }
@@ -96,6 +98,7 @@ impl PythonSpy {
             short_filenames: HashMap::new(),
             python_thread_ids: HashMap::new(),
             python_thread_names: HashMap::new(),
+            python_modules_offset: OnceLock::new(),
         })
     }
 

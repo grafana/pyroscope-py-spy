@@ -5,6 +5,7 @@ use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use anyhow::{Context, Error, Result};
 use console::style;
@@ -182,6 +183,7 @@ pub struct PythonCoreDump {
     version: Version,
     interpreter_address: usize,
     threadstate_address: usize,
+    python_modules_offset: OnceLock<usize>,
 }
 
 impl PythonCoreDump {
@@ -256,6 +258,7 @@ impl PythonCoreDump {
             version,
             interpreter_address,
             threadstate_address,
+            python_modules_offset: OnceLock::new(),
         })
     }
 
@@ -342,6 +345,7 @@ impl PythonCoreDump {
             self.interpreter_address,
             &self.core,
             &self.version,
+            &self.python_modules_offset,
         )
         .ok();
 
@@ -476,6 +480,7 @@ mod test {
             version,
             interpreter_address: 0x000055a8293dbe20,
             threadstate_address: 0x000055a82745fe18,
+            python_modules_offset: OnceLock::new(),
         };
 
         let config = Config::default();

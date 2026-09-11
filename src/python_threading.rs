@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use anyhow::{Context, Error};
 
@@ -20,14 +21,21 @@ pub fn thread_names_from_interpreter<I: InterpreterState, P: ProcessMemory>(
     interpreter_address: usize,
     process: &P,
     version: &Version,
+    modules_offset: &OnceLock<usize>,
 ) -> Result<HashMap<u64, String>, Error> {
     let modules_ptr_ptr = if version.major == 3 && version.minor == 14 {
-        let runtime: usize = process.copy_struct(
-            interpreter_address + std::mem::offset_of!(v3_14_0::PyInterpreterState, runtime),
-        )?;
-        let offsets: v3_14_0::_Py_DebugOffsets = process.copy_struct(runtime)?;
-        (interpreter_address + offsets.interpreter_state.imports_modules as usize)
-            as *const *const I::Object
+        let offset = if let Some(offset) = modules_offset.get() {
+            *offset
+        } else {
+            let runtime: usize = process.copy_struct(
+                interpreter_address + std::mem::offset_of!(v3_14_0::PyInterpreterState, runtime),
+            )?;
+            let offsets: v3_14_0::_Py_DebugOffsets = process.copy_struct(runtime)?;
+            let offset = offsets.interpreter_state.imports_modules as usize;
+            let _ = modules_offset.set(offset);
+            offset
+        };
+        (interpreter_address + offset) as *const *const I::Object
     } else {
         I::modules_ptr_ptr(interpreter_address)
     };
@@ -95,7 +103,12 @@ pub fn thread_names_from_interpreter<I: InterpreterState, P: ProcessMemory>(
 fn _thread_name_lookup<I: InterpreterState>(
     spy: &PythonSpy,
 ) -> Result<HashMap<u64, String>, Error> {
-    thread_names_from_interpreter::<I, Process>(spy.interpreter_address, &spy.process, &spy.version)
+    thread_names_from_interpreter::<I, Process>(
+        spy.interpreter_address,
+        &spy.process,
+        &spy.version,
+        &spy.python_modules_offset,
+    )
 }
 
 // try getting the threadnames, but don't sweat it if we can't. Since this relies on dictionary
@@ -143,4 +156,65 @@ pub fn thread_name_lookup(process: &PythonSpy) -> Option<HashMap<u64, String>> {
         _ => return None,
     };
     err.ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    struct Memory {
+        reads: Cell<usize>,
+    }
+
+    impl ProcessMemory for Memory {
+        fn read(&self, addr: usize, buf: &mut [u8]) -> Result<(), remoteprocess::Error> {
+            let reads = self.reads.get() + 1;
+            self.reads.set(reads);
+            if reads != 1 {
+                if addr == std::mem::offset_of!(v3_14_0::PyInterpreterState, runtime) {
+                    buf.copy_from_slice(&0x10000usize.to_ne_bytes());
+                    return Ok(());
+                }
+                if addr == 0x10000 {
+                    let mut offsets = v3_14_0::_Py_DebugOffsets::default();
+                    offsets.interpreter_state.imports_modules = 0x20000;
+                    return remoteprocess::LocalProcess.read(&offsets as *const _ as usize, buf);
+                }
+            }
+            Err(remoteprocess::Error::IOError(
+                std::io::Error::from_raw_os_error(libc::EFAULT),
+            ))
+        }
+    }
+
+    #[test]
+    fn test_modules_offset_cached_after_successful_read() {
+        let process = Memory {
+            reads: Cell::new(0),
+        };
+        let cache = OnceLock::new();
+        let version = Version {
+            major: 3,
+            minor: 14,
+            patch: 7,
+            release_flags: String::new(),
+            build_metadata: None,
+        };
+        let lookup = |cache| {
+            thread_names_from_interpreter::<v3_14_0::PyInterpreterState, _>(
+                0, &process, &version, cache,
+            )
+        };
+        assert!(lookup(&cache).is_err());
+        assert!(cache.get().is_none());
+        assert_eq!(process.reads.get(), 1);
+        assert!(lookup(&cache).is_err());
+        assert_eq!(cache.get(), Some(&0x20000));
+        assert_eq!(process.reads.get(), 4);
+        assert!(lookup(&cache).is_err());
+        assert_eq!(process.reads.get(), 5);
+        assert!(lookup(&OnceLock::new()).is_err());
+        assert_eq!(process.reads.get(), 8);
+    }
 }
