@@ -393,17 +393,74 @@ where
     ))
 }
 
-pub fn get_interpreter_address<P>(
+pub enum PythonDebugOffsets {
+    V3_13(v3_13_0::_Py_DebugOffsets),
+    V3_14(v3_14_0::_Py_DebugOffsets),
+}
+
+impl PythonDebugOffsets {
+    fn read<P: ProcessMemory>(process: &P, runtime: usize, version: &Version) -> Result<Self> {
+        match (version.major, version.minor) {
+            (3, 13) => Ok(Self::V3_13(process.copy_struct(runtime)?)),
+            (3, 14) => Ok(Self::V3_14(process.copy_struct(runtime)?)),
+            _ => Err(format_err!("No debug offsets for Python {}", version)),
+        }
+    }
+
+    fn interpreters_head(&self) -> usize {
+        match self {
+            Self::V3_13(offsets) => offsets.runtime_state.interpreters_head as usize,
+            Self::V3_14(offsets) => offsets.runtime_state.interpreters_head as usize,
+        }
+    }
+
+    pub(crate) fn imports_modules(&self) -> usize {
+        match self {
+            Self::V3_13(offsets) => offsets.interpreter_state.imports_modules as usize,
+            Self::V3_14(offsets) => offsets.interpreter_state.imports_modules as usize,
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub fn get_interpreter_address<P: ProcessMemory>(
     python_info: &PythonProcessInfo,
     process: &P,
     version: &Version,
-) -> Result<usize, Error>
-where
-    P: ProcessMemory,
-{
+) -> Result<usize> {
+    get_interpreter_address_impl(python_info, process, version, &mut None)
+}
+
+pub(crate) fn get_interpreter_address_with_debug_offsets<P: ProcessMemory>(
+    python_info: &PythonProcessInfo,
+    process: &P,
+    version: &Version,
+) -> Result<(usize, Option<PythonDebugOffsets>)> {
+    let mut debug_offsets = None;
+    let address = get_interpreter_address_impl(python_info, process, version, &mut debug_offsets)?;
+    if debug_offsets.is_none() {
+        let runtime_offset = match (version.major, version.minor) {
+            (3, 13) => Some(std::mem::offset_of!(v3_13_0::PyInterpreterState, runtime)),
+            (3, 14) => Some(std::mem::offset_of!(v3_14_0::PyInterpreterState, runtime)),
+            _ => None,
+        };
+        if let Some(offset) = runtime_offset {
+            let runtime = process.copy_struct(address + offset)?;
+            debug_offsets = Some(PythonDebugOffsets::read(process, runtime, version)?);
+        }
+    }
+    Ok((address, debug_offsets))
+}
+
+fn get_interpreter_address_impl<P: ProcessMemory>(
+    python_info: &PythonProcessInfo,
+    process: &P,
+    version: &Version,
+    debug_offsets: &mut Option<PythonDebugOffsets>,
+) -> Result<usize> {
     // get the address of the main PyInterpreterState object from loaded symbols if we can
     // (this tends to be faster than scanning through the bss section)
-    match get_interpreter_address_from_symbols(python_info, process, version) {
+    match get_interpreter_address_from_symbols(python_info, process, version, debug_offsets) {
         Ok(addr) => {
             // Check that the symbol address is valid before returning
             match check_interpreter_addresses(&[addr], &*python_info.maps, process, version) {
@@ -445,6 +502,7 @@ fn get_interpreter_address_from_symbols<P>(
     python_info: &PythonProcessInfo,
     process: &P,
     version: &Version,
+    debug_offsets: &mut Option<PythonDebugOffsets>,
 ) -> Result<usize, Error>
 where
     P: ProcessMemory,
@@ -456,37 +514,12 @@ where
             ..
         } => {
             if let Some(&pyruntime_addr) = python_info.get_symbol("_PyRuntime") {
-                // figure out the interpreters_head location using the debug_offsets
-                match version {
-                    Version {
-                        major: 3,
-                        minor: 14,
-                        ..
-                    } => {
-                        let debug_offsets: v3_14_0::_Py_DebugOffsets =
-                            process.copy_struct(pyruntime_addr as usize)?;
-                        return process
-                            .copy_struct(
-                                pyruntime_addr as usize
-                                    + debug_offsets.runtime_state.interpreters_head as usize,
-                            )
-                            .context(
-                                "Failed to copy py_debug_offsets.runtime_state.interpreters_head",
-                            );
-                    }
-                    _ => {
-                        let debug_offsets: v3_13_0::_Py_DebugOffsets =
-                            process.copy_struct(pyruntime_addr as usize)?;
-                        return process
-                            .copy_struct(
-                                pyruntime_addr as usize
-                                    + debug_offsets.runtime_state.interpreters_head as usize,
-                            )
-                            .context(
-                                "Failed to copy py_debug_offsets.runtime_state.interpreters_head",
-                            );
-                    }
-                };
+                let offsets = PythonDebugOffsets::read(process, pyruntime_addr as usize, version)?;
+                let head = pyruntime_addr as usize + offsets.interpreters_head();
+                *debug_offsets = Some(offsets);
+                return process
+                    .copy_struct(head)
+                    .context("Failed to copy py_debug_offsets.runtime_state.interpreters_head");
             }
         }
         Version {

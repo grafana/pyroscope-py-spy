@@ -5,7 +5,6 @@ use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::OnceLock;
 
 use anyhow::{Context, Error, Result};
 use console::style;
@@ -22,8 +21,8 @@ use crate::python_bindings::{
 use crate::python_data_access::format_variable;
 use crate::python_interpreters::InterpreterState;
 use crate::python_process_info::{
-    get_interpreter_address, get_python_version, get_threadstate_address, is_python_lib,
-    ContainsAddr, PythonProcessInfo,
+    get_interpreter_address_with_debug_offsets, get_python_version, get_threadstate_address,
+    is_python_lib, ContainsAddr, PythonDebugOffsets, PythonProcessInfo,
 };
 use crate::python_threading::thread_names_from_interpreter;
 use crate::stack_trace::{get_stack_traces, StackTrace};
@@ -183,7 +182,7 @@ pub struct PythonCoreDump {
     version: Version,
     interpreter_address: usize,
     threadstate_address: usize,
-    python_modules_offset: OnceLock<usize>,
+    debug_offsets: Option<PythonDebugOffsets>,
 }
 
 impl PythonCoreDump {
@@ -244,7 +243,8 @@ impl PythonCoreDump {
             get_python_version(&python_info, &core).context("failed to get python version")?;
         info!("Got python version {}", version);
 
-        let interpreter_address = get_interpreter_address(&python_info, &core, &version)?;
+        let (interpreter_address, debug_offsets) =
+            get_interpreter_address_with_debug_offsets(&python_info, &core, &version)?;
         info!("Found interpreter at 0x{:016x}", interpreter_address);
 
         // lets us figure out which thread has the GIL
@@ -258,7 +258,7 @@ impl PythonCoreDump {
             version,
             interpreter_address,
             threadstate_address,
-            python_modules_offset: OnceLock::new(),
+            debug_offsets,
         })
     }
 
@@ -345,7 +345,7 @@ impl PythonCoreDump {
             self.interpreter_address,
             &self.core,
             &self.version,
-            &self.python_modules_offset,
+            self.debug_offsets.as_ref(),
         )
         .ok();
 
@@ -480,7 +480,7 @@ mod test {
             version,
             interpreter_address: 0x000055a8293dbe20,
             threadstate_address: 0x000055a82745fe18,
-            python_modules_offset: OnceLock::new(),
+            debug_offsets: None,
         };
 
         let config = Config::default();

@@ -4,7 +4,6 @@ use std::collections::HashSet;
 #[cfg(all(target_os = "linux", feature = "unwind"))]
 use std::iter::FromIterator;
 use std::path::Path;
-use std::sync::OnceLock;
 
 use anyhow::{Context, Error, Result};
 use remoteprocess::{Pid, Process, ProcessMemory, Tid};
@@ -19,7 +18,8 @@ use crate::python_bindings::{
 use crate::python_data_access::format_variable;
 use crate::python_interpreters::{InterpreterState, ThreadState};
 use crate::python_process_info::{
-    get_interpreter_address, get_python_version, get_threadstate_address, PythonProcessInfo,
+    get_interpreter_address_with_debug_offsets, get_python_version, get_threadstate_address,
+    PythonDebugOffsets, PythonProcessInfo,
 };
 use crate::python_threading::thread_name_lookup;
 use crate::stack_trace::{get_gil_threadid, get_stack_trace, StackTrace};
@@ -38,7 +38,7 @@ pub struct PythonSpy {
     pub short_filenames: HashMap<String, Option<String>>,
     pub python_thread_ids: HashMap<u64, Tid>,
     pub python_thread_names: HashMap<u64, String>,
-    pub(crate) python_modules_offset: OnceLock<usize>,
+    pub(crate) debug_offsets: Option<PythonDebugOffsets>,
     #[cfg(target_os = "linux")]
     pub dockerized: bool,
 }
@@ -61,7 +61,8 @@ impl PythonSpy {
         let version = get_python_version(&python_info, &process)?;
         info!("python version {} detected", version);
 
-        let interpreter_address = get_interpreter_address(&python_info, &process, &version)?;
+        let (interpreter_address, debug_offsets) =
+            get_interpreter_address_with_debug_offsets(&python_info, &process, &version)?;
         info!("Found interpreter at 0x{:016x}", interpreter_address);
 
         // lets us figure out which thread has the GIL
@@ -98,7 +99,7 @@ impl PythonSpy {
             short_filenames: HashMap::new(),
             python_thread_ids: HashMap::new(),
             python_thread_names: HashMap::new(),
-            python_modules_offset: OnceLock::new(),
+            debug_offsets,
         })
     }
 
