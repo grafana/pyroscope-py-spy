@@ -520,7 +520,12 @@ fn test_negative_linenumber_increment() {
     // Python 3.12 inlined comprehensions - see https://peps.python.org/pep-0709/
     match (runner.spy.version.major, runner.spy.version.minor) {
         (3, 0..=11) => {
-            assert_eq!(trace.frames[0].name, "<listcomp>");
+            let expected_name = if runner.spy.version.minor >= 11 {
+                "f.<locals>.<listcomp>"
+            } else {
+                "<listcomp>"
+            };
+            assert_eq!(trace.frames[0].name, expected_name);
             assert!(trace.frames[0].line >= 5 && trace.frames[0].line <= 10);
             assert_eq!(trace.frames[1].name, "f");
             assert!(trace.frames[1].line >= 5 && trace.frames[0].line <= 10);

@@ -7,6 +7,7 @@ use crate::python_bindings::{
 };
 use crate::python_data_access::{copy_long, copy_string, DictIterator, PY_TPFLAGS_MANAGED_DICT};
 use crate::python_interpreters::{InterpreterState, Object, TypeObject};
+use crate::python_process_info::PythonDebugOffsets;
 use crate::python_spy::PythonSpy;
 use remoteprocess::Process;
 
@@ -20,8 +21,16 @@ pub fn thread_names_from_interpreter<I: InterpreterState, P: ProcessMemory>(
     interpreter_address: usize,
     process: &P,
     version: &Version,
+    debug_offsets: Option<&PythonDebugOffsets>,
 ) -> Result<HashMap<u64, String>, Error> {
-    let modules_ptr_ptr = I::modules_ptr_ptr(interpreter_address);
+    let modules_ptr_ptr = match debug_offsets {
+        Some(offsets) => {
+            // I::modules_ptr_ptr uses the 3.14.0 layout, but Python 3.14.7's larger
+            // GC state moves imports.modules. Use the target's reported offset.
+            (interpreter_address + offsets.imports_modules()) as *const *const I::Object
+        }
+        None => I::modules_ptr_ptr(interpreter_address),
+    };
     let modules: *const I::Object = process
         .copy_pointer(modules_ptr_ptr)
         .context("Failed to copy modules PyObject")?;
@@ -86,7 +95,12 @@ pub fn thread_names_from_interpreter<I: InterpreterState, P: ProcessMemory>(
 fn _thread_name_lookup<I: InterpreterState>(
     spy: &PythonSpy,
 ) -> Result<HashMap<u64, String>, Error> {
-    thread_names_from_interpreter::<I, Process>(spy.interpreter_address, &spy.process, &spy.version)
+    thread_names_from_interpreter::<I, Process>(
+        spy.interpreter_address,
+        &spy.process,
+        &spy.version,
+        spy.debug_offsets.as_ref(),
+    )
 }
 
 // try getting the threadnames, but don't sweat it if we can't. Since this relies on dictionary
