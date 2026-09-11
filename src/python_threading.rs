@@ -21,7 +21,19 @@ pub fn thread_names_from_interpreter<I: InterpreterState, P: ProcessMemory>(
     process: &P,
     version: &Version,
 ) -> Result<HashMap<u64, String>, Error> {
-    let modules_ptr_ptr = I::modules_ptr_ptr(interpreter_address);
+    let modules_ptr_ptr = if version.major == 3 && version.minor == 14 {
+        // Maintenance releases can change the interpreter layout after `runtime`
+        // (for example, by growing the GC state). Read the modules offset from
+        // the target's debug offsets instead of using the 3.14.0 layout.
+        let runtime: usize = process.copy_struct(
+            interpreter_address + std::mem::offset_of!(v3_14_0::PyInterpreterState, runtime),
+        )?;
+        let offsets: v3_14_0::_Py_DebugOffsets = process.copy_struct(runtime)?;
+        (interpreter_address + offsets.interpreter_state.imports_modules as usize)
+            as *const *const I::Object
+    } else {
+        I::modules_ptr_ptr(interpreter_address)
+    };
     let modules: *const I::Object = process
         .copy_pointer(modules_ptr_ptr)
         .context("Failed to copy modules PyObject")?;
