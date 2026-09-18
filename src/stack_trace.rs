@@ -278,8 +278,8 @@ where
 pub const ERROR_FRAME_NAME: &str = "<error>";
 
 impl StackTrace {
-    /// Stand-in for an unparseable sample, so its cpu time isn't lost from the profile, only
-    /// its attribution. Carries no thread/process detail so all such samples share one bucket.
+    /// Stand-in for a sample we couldn't parse, so its cpu time isn't lost from the profile,
+    /// only its attribution. Carries no thread/process detail so all such samples share a bucket.
     pub fn error(pid: Pid) -> StackTrace {
         StackTrace {
             pid,
