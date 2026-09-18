@@ -18,7 +18,7 @@ use crate::python_bindings::{
     v2_7_15, v3_10_0, v3_11_0, v3_12_0, v3_13_0, v3_14_0, v3_3_7, v3_5_5, v3_6_6, v3_7_0, v3_8_0,
     v3_9_5,
 };
-use crate::python_data_access::{format_variable, is_invalid_string};
+use crate::python_data_access::format_variable;
 use crate::python_interpreters::InterpreterState;
 use crate::python_process_info::{
     get_interpreter_address_with_debug_offsets, get_python_version, get_threadstate_address,
@@ -364,13 +364,8 @@ impl PythonCoreDump {
                             &self.version,
                             local.addr,
                             max_length,
-                            config.check_utf8,
                         );
-                        local.repr = Some(match repr {
-                            Ok(repr) => repr,
-                            Err(e) if is_invalid_string(&e) => return Err(e),
-                            Err(_) => "?".to_owned(),
-                        });
+                        local.repr = Some(repr.unwrap_or_else(|_| "?".to_owned()));
                     }
                 }
             }

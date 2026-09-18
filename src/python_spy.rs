@@ -347,13 +347,8 @@ impl PythonSpy {
                             &self.version,
                             local.addr,
                             max_length,
-                            self.config.check_utf8,
                         );
-                        local.repr = Some(match repr {
-                            Ok(repr) => repr,
-                            Err(e) if is_invalid_string(&e) => return Err(e),
-                            Err(_) => "?".to_owned(),
-                        });
+                        local.repr = Some(repr.unwrap_or_else(|_| "?".to_owned()));
                     }
                 }
             }

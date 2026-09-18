@@ -232,7 +232,7 @@ where
 
         let locals = if copy_locals {
             Some(
-                get_locals(&code, frame_ptr, &frame, process, check_utf8)
+                get_locals(&code, frame_ptr, &frame, process)
                     .context("Failed to get local variables")?,
             )
         } else {
@@ -341,7 +341,6 @@ fn get_locals<C: CodeObject, F: FrameObject, P: ProcessMemory>(
     frameptr: *const F,
     frame: &F,
     process: &P,
-    check_utf8: bool,
 ) -> Result<Vec<LocalVariable>, Error> {
     let local_count = code.nlocals() as usize;
     let argcount = code.argcount() as usize;
@@ -358,8 +357,10 @@ fn get_locals<C: CodeObject, F: FrameObject, P: ProcessMemory>(
         let nameptr: *const C::StringObject =
             process.copy_struct(varnames.address(code.varnames() as usize, i))?;
 
-        let name = copy_string(nameptr, process, check_utf8)
-            .context("Failed to copy local variable name")?;
+        // not validated: locals are a cli-only feature, and a bad name here shouldn't be able
+        // to discard a sample that's otherwise fine
+        let name =
+            copy_string(nameptr, process, false).context("Failed to copy local variable name")?;
         let addr: usize = process.copy_struct(locals_addr + i * ptr_size)?;
 
         // hack: handle things like None, True, False, small integer constants etc on Python 3.14

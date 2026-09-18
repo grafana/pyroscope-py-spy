@@ -283,25 +283,6 @@ Since the calls we use to read memory from are not atomic, and we have to issue 
 means that occasionally we get errors when sampling. This can show up as an increased error rate when sampling, or as
 partial stack frames being included in the output.
 
-### How do I make sure the function names py-spy reports are real?
-
-py-spy reads function names, filenames and thread names directly out of the target process's
-memory. If py-spy ends up reading memory that isn't the object it expected -- because it latched
-on to the wrong interpreter address, because a read got torn while the process was running under
-```--nonblocking```, or because a core file is truncated -- those bytes still get decoded into a
-string, and you see a plausible-looking but meaningless frame.
-
-Setting the ```--check-utf8``` option makes py-spy validate every string it decodes against the
-encoding the target claims it is in. If a string fails validation, the whole sample is thrown
-away and attributed to a single ```<error>``` stack trace instead.
-
-Discarding the sample rather than dropping it keeps your totals honest: the time still shows up
-in the profile, just under ```<error>``` rather than under a fabricated stack. So the size of the
-```<error>``` frame tells you how much of the profile you should not trust, and everything
-outside it has been checked.
-
-This costs a range check per character, so it's off by default.
-
 ### Does py-spy support 32-bit Windows? Integrate with PyPy? Work with USC2 versions of Python2?
 
 Not yet =).

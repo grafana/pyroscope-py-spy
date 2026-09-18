@@ -430,7 +430,6 @@ pub fn format_variable<I, P>(
     version: &Version,
     addr: usize,
     max_length: isize,
-    strict: bool,
 ) -> Result<String, Error>
 where
     I: InterpreterState,
@@ -452,13 +451,7 @@ where
         .iter()
         .position(|&x| x == 0)
         .unwrap_or(max_type_len);
-    let value_type_name = match std::str::from_utf8(&value_type_name[..length]) {
-        Ok(name) => name,
-        Err(_) if strict => {
-            return Err(InvalidString::new("invalid utf8 in tp_name").into());
-        }
-        Err(e) => return Err(e.into()),
-    };
+    let value_type_name = std::str::from_utf8(&value_type_name[..length])?;
 
     let format_int = |value: i64| {
         if value_type_name == "bool" {
@@ -487,7 +480,7 @@ where
     } else if flags & PY_TPFLAGS_STRING_SUBCLASS != 0
         || (version.major == 2 && (flags & PY_TPFLAGS_BYTES_SUBCLASS != 0))
     {
-        let value = copy_string(addr as *const I::StringObject, process, strict)?
+        let value = copy_string(addr as *const I::StringObject, process, false)?
             .replace('\'', "\\\"")
             .replace('\n', "\\n");
         if let Some((offset, _)) = value.char_indices().nth((max_length - 5) as usize) {
@@ -501,8 +494,8 @@ where
             let mut remaining = max_length - 2;
             for entry in DictIterator::from(process, version, addr)? {
                 let (key, value) = entry?;
-                let key = format_variable::<I, P>(process, version, key, remaining, strict)?;
-                let value = format_variable::<I, P>(process, version, value, remaining, strict)?;
+                let key = format_variable::<I, P>(process, version, key, remaining)?;
+                let value = format_variable::<I, P>(process, version, value, remaining)?;
                 remaining -= (key.len() + value.len()) as isize + 4;
                 if remaining <= 5 {
                     values.push("...".to_owned());
@@ -523,8 +516,7 @@ where
         for i in 0..object.size() {
             let valueptr: *mut I::Object =
                 process.copy_struct(addr + i * std::mem::size_of::<*mut I::Object>())?;
-            let value =
-                format_variable::<I, P>(process, version, valueptr as usize, remaining, strict)?;
+            let value = format_variable::<I, P>(process, version, valueptr as usize, remaining)?;
             remaining -= value.len() as isize + 2;
             if remaining <= 5 {
                 values.push("...".to_owned());
@@ -539,8 +531,7 @@ where
         let mut remaining = max_length - 2;
         for i in 0..object.size() {
             let value_addr: *mut I::Object = process.copy_struct(object.address(addr, i))?;
-            let value =
-                format_variable::<I, P>(process, version, value_addr as usize, remaining, strict)?;
+            let value = format_variable::<I, P>(process, version, value_addr as usize, remaining)?;
             remaining -= value.len() as isize + 2;
             if remaining <= 5 {
                 values.push("...".to_owned());

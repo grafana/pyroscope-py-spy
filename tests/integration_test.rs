@@ -221,8 +221,7 @@ fn test_ucs4_function_names() {
         let trace = &traces[0];
         assert!(!trace.error, "check_utf8={check_utf8}");
         assert_eq!(
-            trace.frames[0].name,
-            "\u{1d557}\u{1d566}\u{1d55f}\u{1d554}\u{1d565}\u{1d55a}\u{1d560}\u{1d55f}\u{1d7d9}",
+            trace.frames[0].name, "\u{20000}\u{20001}\u{20002}\u{2000b}",
             "check_utf8={check_utf8}"
         );
         assert_eq!(trace.frames[1].name, "<module>", "check_utf8={check_utf8}");

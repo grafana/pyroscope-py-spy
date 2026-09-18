@@ -213,9 +213,10 @@ impl Config {
         let check_utf8 = Arg::new("check_utf8")
             .long("check-utf8")
             .help(
-                "Validate that strings read from the target process are well formed. If a \
-                   string fails validation the whole sample is discarded and counted under a \
-                   single '<error>' stack trace, so total cpu time is preserved",
+                "Validate that the function names, filenames and thread names read from the \
+                   target process are well formed. If a string fails validation the whole \
+                   sample is discarded and counted under a single '<error>' stack trace, so \
+                   total cpu time is preserved",
             )
             .action(ArgAction::SetTrue);
 

@@ -2,9 +2,10 @@
 # -*- coding: utf-8 -*-
 import time
 
-# non-BMP identifier, so cpython stores this name as a kind=4 (UCS-4) string
-def 𝕗𝕦𝕟𝕔𝕥𝕚𝕠𝕟𝟙(seconds):
+# CJK ext B, not mathematical alphanumerics: identifiers are NFKC-normalized while parsing,
+# so a name like 𝕗𝕦𝕟𝕔 would reach us as plain ascii and stop testing the kind=4 path
+def 𠀀𠀁𠀂𠀋(seconds):
     time.sleep(seconds)
 
 if __name__ == "__main__":
-    𝕗𝕦𝕟𝕔𝕥𝕚𝕠𝕟𝟙(100)
+    𠀀𠀁𠀂𠀋(100)
