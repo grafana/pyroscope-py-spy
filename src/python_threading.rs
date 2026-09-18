@@ -22,6 +22,7 @@ pub fn thread_names_from_interpreter<I: InterpreterState, P: ProcessMemory>(
     process: &P,
     version: &Version,
     debug_offsets: Option<&PythonDebugOffsets>,
+    check_utf8: bool,
 ) -> Result<HashMap<u64, String>, Error> {
     let modules_ptr_ptr = match debug_offsets {
         Some(offsets) => {
@@ -38,14 +39,14 @@ pub fn thread_names_from_interpreter<I: InterpreterState, P: ProcessMemory>(
     let mut ret = HashMap::new();
     for entry in DictIterator::from(process, version, modules as usize)? {
         let (key, value) = entry?;
-        let module_name = copy_string(key as *const I::StringObject, process)?;
+        let module_name = copy_string(key as *const I::StringObject, process, check_utf8)?;
         if module_name == "threading" {
             let module: I::Object = process.copy_struct(value)?;
             let module_type = process.copy_pointer(module.ob_type())?;
             let dictptr: usize = process.copy_struct(value + module_type.dictoffset() as usize)?;
             for i in DictIterator::from(process, version, dictptr)? {
                 let (key, value) = i?;
-                let name = copy_string(key as *const I::StringObject, process)?;
+                let name = copy_string(key as *const I::StringObject, process, check_utf8)?;
                 if name == "_active" {
                     for i in DictIterator::from(process, version, value)? {
                         let (key, value) = i?;
@@ -72,10 +73,14 @@ pub fn thread_names_from_interpreter<I: InterpreterState, P: ProcessMemory>(
 
                         for i in dict_iter {
                             let (key, value) = i?;
-                            let varname = copy_string(key as *const I::StringObject, process)?;
+                            let varname =
+                                copy_string(key as *const I::StringObject, process, check_utf8)?;
                             if varname == "_name" {
-                                let threadname =
-                                    copy_string(value as *const I::StringObject, process)?;
+                                let threadname = copy_string(
+                                    value as *const I::StringObject,
+                                    process,
+                                    check_utf8,
+                                )?;
                                 ret.insert(threadid as u64, threadname);
                                 break;
                             }
@@ -100,6 +105,7 @@ fn _thread_name_lookup<I: InterpreterState>(
         &spy.process,
         &spy.version,
         spy.debug_offsets.as_ref(),
+        spy.config.check_utf8,
     )
 }
 

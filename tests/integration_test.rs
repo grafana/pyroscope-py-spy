@@ -199,6 +199,63 @@ fn test_recursive() {
 }
 
 #[test]
+fn test_ucs4_function_names() {
+    #[cfg(target_os = "macos")]
+    {
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+    }
+
+    // non-BMP identifiers are kind=4 (UCS-4), the path that used to reinterpret raw target
+    // bytes as `char`
+    for check_utf8 in [false, true] {
+        let config = Config {
+            check_utf8,
+            ..Default::default()
+        };
+        let mut runner = TestRunner::new(config, "./tests/scripts/ucs4_names.py");
+        let traces = runner.spy.get_stack_traces().unwrap();
+
+        assert_eq!(traces.len(), 1, "check_utf8={check_utf8}");
+        let trace = &traces[0];
+        assert!(!trace.error, "check_utf8={check_utf8}");
+        assert_eq!(
+            trace.frames[0].name,
+            "\u{1d557}\u{1d566}\u{1d55f}\u{1d554}\u{1d565}\u{1d55a}\u{1d560}\u{1d55f}\u{1d7d9}",
+            "check_utf8={check_utf8}"
+        );
+        assert_eq!(trace.frames[1].name, "<module>", "check_utf8={check_utf8}");
+    }
+}
+
+#[test]
+fn test_unicode_check_utf8() {
+    #[cfg(target_os = "macos")]
+    {
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+    }
+
+    // the filename is non-BMP here, so co_filename is UCS-4
+    let config = Config {
+        check_utf8: true,
+        ..Default::default()
+    };
+    let mut runner = TestRunner::new(config, "./tests/scripts/unicode\u{1f4a9}.py");
+    let traces = runner.spy.get_stack_traces().unwrap();
+
+    assert_eq!(traces.len(), 1);
+    assert!(!traces[0].error);
+    assert_eq!(traces[0].frames[0].name, "function1");
+    assert_eq!(
+        traces[0].frames[0].short_filename,
+        Some("unicode\u{1f4a9}.py".to_owned())
+    );
+}
+
+#[test]
 fn test_unicode() {
     #[cfg(target_os = "macos")]
     {

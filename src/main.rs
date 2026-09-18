@@ -262,15 +262,19 @@ fn record_samples(pid: remoteprocess::Pid, config: &Config) -> Result<(), Error>
         }
 
         for trace in sample.traces.iter_mut() {
-            if !(config.include_idle || trace.active) {
-                continue;
+            // '<error>' exists so the totals stay intact: it bypasses the filters, and gets no
+            // thread/process frames so every discarded sample shares one bucket
+            if !trace.error {
+                if !(config.include_idle || trace.active) {
+                    continue;
+                }
+
+                if config.gil_only && !trace.owns_gil {
+                    continue;
+                }
             }
 
-            if config.gil_only && !trace.owns_gil {
-                continue;
-            }
-
-            if config.include_thread_ids {
+            if config.include_thread_ids && !trace.error {
                 let threadid = trace.format_threadid();
                 let thread_fmt = if let Some(thread_name) = &trace.thread_name {
                     format!("thread ({threadid}): {thread_name}")
@@ -289,7 +293,7 @@ fn record_samples(pid: remoteprocess::Pid, config: &Config) -> Result<(), Error>
                 });
             }
 
-            if let Some(process_info) = trace.process_info.as_ref() {
+            if let Some(process_info) = trace.process_info.as_ref().filter(|_| !trace.error) {
                 trace.frames.push(process_info.to_frame());
                 let mut parent = process_info.parent.as_ref();
                 while parent.is_some() {

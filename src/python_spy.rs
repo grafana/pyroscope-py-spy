@@ -15,7 +15,7 @@ use crate::python_bindings::{
     v2_7_15, v3_10_0, v3_11_0, v3_12_0, v3_13_0, v3_14_0, v3_3_7, v3_5_5, v3_6_6, v3_7_0, v3_8_0,
     v3_9_5,
 };
-use crate::python_data_access::format_variable;
+use crate::python_data_access::{format_variable, is_invalid_string};
 use crate::python_interpreters::{InterpreterState, ThreadState};
 use crate::python_process_info::{
     get_interpreter_address_with_debug_offsets, get_python_version, get_threadstate_address,
@@ -132,6 +132,18 @@ impl PythonSpy {
 
     /// Gets a StackTrace for each thread in the current process
     pub fn get_stack_traces(&mut self) -> Result<Vec<StackTrace>, Error> {
+        match self._dispatch_stack_traces() {
+            // a bad string means we read memory that isn't the object we expected, so the
+            // sample is suspect. report it as a trace, not an error, to keep it counted
+            Err(e) if is_invalid_string(&e) => {
+                warn!("discarding sample from pid {}: {:#}", self.pid, e);
+                Ok(vec![StackTrace::error(self.pid)])
+            }
+            other => other,
+        }
+    }
+
+    fn _dispatch_stack_traces(&mut self) -> Result<Vec<StackTrace>, Error> {
         match self.version {
             // ABI for 2.3/2.4/2.5/2.6/2.7 is compatible for our purpose
             Version {
@@ -255,6 +267,7 @@ impl PythonSpy {
                 &self.process,
                 self.config.dump_locals > 0,
                 self.config.lineno,
+                self.config.check_utf8,
             )
             .with_context(|| {
                 format!(
@@ -334,8 +347,13 @@ impl PythonSpy {
                             &self.version,
                             local.addr,
                             max_length,
+                            self.config.check_utf8,
                         );
-                        local.repr = Some(repr.unwrap_or_else(|_| "?".to_owned()));
+                        local.repr = Some(match repr {
+                            Ok(repr) => repr,
+                            Err(e) if is_invalid_string(&e) => return Err(e),
+                            Err(_) => "?".to_owned(),
+                        });
                     }
                 }
             }

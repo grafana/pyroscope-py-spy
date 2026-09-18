@@ -9,10 +9,54 @@ use crate::utils::offset_of;
 use crate::version::Version;
 use remoteprocess::ProcessMemory;
 
+/// Bytes read out of the target process aren't a well formed string. Its own type so callers
+/// can tell this apart from an ordinary read failure: only this one discards the sample.
+#[derive(Debug)]
+pub struct InvalidString {
+    detail: String,
+}
+
+impl InvalidString {
+    fn code_point(cp: u32) -> InvalidString {
+        InvalidString {
+            detail: format!("{cp:#x} is not a unicode scalar value"),
+        }
+    }
+
+    fn new(detail: impl Into<String>) -> InvalidString {
+        InvalidString {
+            detail: detail.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for InvalidString {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "invalid string read from target process: {}",
+            self.detail
+        )
+    }
+}
+
+impl std::error::Error for InvalidString {}
+
+/// Walks the chain rather than downcasting: every call site wraps the error in `.context(..)`,
+/// so an outermost-only check would silently disable the option.
+pub fn is_invalid_string(err: &Error) -> bool {
+    err.chain().any(|cause| cause.is::<InvalidString>())
+}
+
 /// Copies a string from a target process. Attempts to handle unicode differences, which mostly seems to be working
+///
+/// `strict` rejects anything inconsistent with the string's declared kind instead of
+/// substituting replacement characters. The `kind`/`ascii` bits below come from the target too,
+/// so bad data means this isn't the `PyUnicodeObject` we thought it was.
 pub fn copy_string<T: StringObject, P: ProcessMemory>(
     ptr: *const T,
     process: &P,
+    strict: bool,
 ) -> Result<String, Error> {
     let obj = process.copy_pointer(ptr)?;
     if obj.size() == 0 {
@@ -31,20 +75,48 @@ pub fn copy_string<T: StringObject, P: ProcessMemory>(
 
     match (kind, obj.ascii()) {
         (4, _) => {
-            #[allow(clippy::cast_ptr_alignment)]
-            let chars = unsafe {
-                std::slice::from_raw_parts(bytes.as_ptr() as *const char, bytes.len() / 4)
-            };
-            Ok(chars.iter().collect())
+            // don't reinterpret these as `char`: a char has to be a unicode scalar value, and
+            // these words are whatever the target happened to have in memory
+            let mut ret = String::with_capacity(bytes.len());
+            for chunk in bytes.chunks_exact(4) {
+                let cp = u32::from_ne_bytes(chunk.try_into().unwrap());
+                match char::from_u32(cp) {
+                    Some(c) => ret.push(c),
+                    None if strict => return Err(InvalidString::code_point(cp).into()),
+                    None => ret.push(char::REPLACEMENT_CHARACTER),
+                }
+            }
+            Ok(ret)
         }
         (2, _) => {
-            #[allow(clippy::cast_ptr_alignment)]
-            let chars = unsafe {
-                std::slice::from_raw_parts(bytes.as_ptr() as *const u16, bytes.len() / 2)
-            };
-            Ok(String::from_utf16(chars)?)
+            let units: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|chunk| u16::from_ne_bytes(chunk.try_into().unwrap()))
+                .collect();
+            match String::from_utf16(&units) {
+                Ok(s) => Ok(s),
+                Err(_) if strict => Err(InvalidString::new("unpaired utf16 surrogate").into()),
+                Err(e) => Err(e.into()),
+            }
         }
-        (1, true) => Ok(String::from_utf8(bytes)?),
+        (1, true) => {
+            // stricter than from_utf8 on purpose: a PyASCIIObject can't hold the multibyte
+            // sequences from_utf8 would accept
+            if strict {
+                if let Some(&b) = bytes.iter().find(|&&b| b >= 0x80) {
+                    return Err(InvalidString::new(format!(
+                        "byte {b:#x} in a string flagged as ascii"
+                    ))
+                    .into());
+                }
+            }
+            match String::from_utf8(bytes) {
+                Ok(s) => Ok(s),
+                Err(_) if strict => Err(InvalidString::new("invalid utf8").into()),
+                Err(e) => Err(e.into()),
+            }
+        }
+        // latin-1, so widening is the correct decoding and can't fail
         (1, false) => Ok(bytes.iter().map(|&b| b as char).collect()),
         _ => Err(format_err!("Unknown string kind {}", kind)),
     }
@@ -358,6 +430,7 @@ pub fn format_variable<I, P>(
     version: &Version,
     addr: usize,
     max_length: isize,
+    strict: bool,
 ) -> Result<String, Error>
 where
     I: InterpreterState,
@@ -379,7 +452,13 @@ where
         .iter()
         .position(|&x| x == 0)
         .unwrap_or(max_type_len);
-    let value_type_name = std::str::from_utf8(&value_type_name[..length])?;
+    let value_type_name = match std::str::from_utf8(&value_type_name[..length]) {
+        Ok(name) => name,
+        Err(_) if strict => {
+            return Err(InvalidString::new("invalid utf8 in tp_name").into());
+        }
+        Err(e) => return Err(e.into()),
+    };
 
     let format_int = |value: i64| {
         if value_type_name == "bool" {
@@ -408,7 +487,7 @@ where
     } else if flags & PY_TPFLAGS_STRING_SUBCLASS != 0
         || (version.major == 2 && (flags & PY_TPFLAGS_BYTES_SUBCLASS != 0))
     {
-        let value = copy_string(addr as *const I::StringObject, process)?
+        let value = copy_string(addr as *const I::StringObject, process, strict)?
             .replace('\'', "\\\"")
             .replace('\n', "\\n");
         if let Some((offset, _)) = value.char_indices().nth((max_length - 5) as usize) {
@@ -422,8 +501,8 @@ where
             let mut remaining = max_length - 2;
             for entry in DictIterator::from(process, version, addr)? {
                 let (key, value) = entry?;
-                let key = format_variable::<I, P>(process, version, key, remaining)?;
-                let value = format_variable::<I, P>(process, version, value, remaining)?;
+                let key = format_variable::<I, P>(process, version, key, remaining, strict)?;
+                let value = format_variable::<I, P>(process, version, value, remaining, strict)?;
                 remaining -= (key.len() + value.len()) as isize + 4;
                 if remaining <= 5 {
                     values.push("...".to_owned());
@@ -444,7 +523,8 @@ where
         for i in 0..object.size() {
             let valueptr: *mut I::Object =
                 process.copy_struct(addr + i * std::mem::size_of::<*mut I::Object>())?;
-            let value = format_variable::<I, P>(process, version, valueptr as usize, remaining)?;
+            let value =
+                format_variable::<I, P>(process, version, valueptr as usize, remaining, strict)?;
             remaining -= value.len() as isize + 2;
             if remaining <= 5 {
                 values.push("...".to_owned());
@@ -459,7 +539,8 @@ where
         let mut remaining = max_length - 2;
         for i in 0..object.size() {
             let value_addr: *mut I::Object = process.copy_struct(object.address(addr, i))?;
-            let value = format_variable::<I, P>(process, version, value_addr as usize, remaining)?;
+            let value =
+                format_variable::<I, P>(process, version, value_addr as usize, remaining, strict)?;
             remaining -= value.len() as isize + 2;
             if remaining <= 5 {
                 values.push("...".to_owned());
@@ -593,14 +674,113 @@ pub mod tests {
         ret
     }
 
+    /// kind=4 PyUnicodeObject built from raw code points, so tests can pass invalid ones
+    pub fn to_ucs4object(code_points: &[u32]) -> AllocatedPyASCIIObject {
+        let mut base = PyASCIIObject {
+            length: code_points.len() as isize,
+            ..Default::default()
+        };
+        base.state.set_compact(1);
+        base.state.set_kind(4);
+        base.state.set_ascii(0);
+        let mut ret = AllocatedPyASCIIObject {
+            base,
+            storage: [0 as u8; 4096],
+        };
+        unsafe {
+            let ptr = &mut ret as *mut AllocatedPyASCIIObject as *mut u8;
+            // a non-ascii compact object stores data after the PyCompactUnicodeObject header
+            let dst = ptr.add(std::mem::size_of::<
+                crate::python_bindings::v3_7_0::PyCompactUnicodeObject,
+            >());
+            for (i, cp) in code_points.iter().enumerate() {
+                copy_nonoverlapping(cp.to_ne_bytes().as_ptr(), dst.add(i * 4), 4);
+            }
+        }
+        ret
+    }
+
+    fn as_unicode(obj: &AllocatedPyASCIIObject) -> &PyUnicodeObject {
+        unsafe { std::mem::transmute(&obj.base) }
+    }
+
     #[test]
     fn test_copy_string() {
         let original = "function_name";
         let obj = to_asciiobject(original);
 
         let unicode: &PyUnicodeObject = unsafe { std::mem::transmute(&obj.base) };
-        let copied = copy_string(unicode, &LocalProcess).unwrap();
+        let copied = copy_string(unicode, &LocalProcess, false).unwrap();
         assert_eq!(copied, original);
+    }
+
+    #[test]
+    fn test_copy_string_ucs4() {
+        let original = "\u{1d4bd}\u{1d452}\u{1d4c1}\u{1d4c1}\u{1d45c}";
+        let code_points: Vec<u32> = original.chars().map(|c| c as u32).collect();
+        let obj = to_ucs4object(&code_points);
+
+        assert_eq!(
+            copy_string(as_unicode(&obj), &LocalProcess, false).unwrap(),
+            original
+        );
+        assert_eq!(
+            copy_string(as_unicode(&obj), &LocalProcess, true).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn test_copy_string_ucs4_invalid_code_point() {
+        // past the last code point, a surrogate, and garbage: none is a valid `char`
+        for invalid in [0x0011_0000, 0x0000_d800, 0xffff_ffff] {
+            let obj = to_ucs4object(&['a' as u32, invalid, 'b' as u32]);
+
+            assert_eq!(
+                copy_string(as_unicode(&obj), &LocalProcess, false).unwrap(),
+                "a\u{fffd}b"
+            );
+
+            let err = copy_string(as_unicode(&obj), &LocalProcess, true).unwrap_err();
+            assert!(is_invalid_string(&err), "unexpected error: {err:#}");
+        }
+    }
+
+    #[test]
+    fn test_copy_string_ascii_with_high_byte() {
+        let mut obj = to_asciiobject("abc");
+        unsafe {
+            let ptr = &mut obj as *mut AllocatedPyASCIIObject as *mut u8;
+            let dst = ptr.add(std::mem::size_of::<PyASCIIObject>());
+            *dst.add(1) = 0xff;
+        }
+
+        let err = copy_string(as_unicode(&obj), &LocalProcess, true).unwrap_err();
+        assert!(is_invalid_string(&err), "unexpected error: {err:#}");
+
+        // lenient still rejects it, but not as an InvalidString: frame skipped, sample kept
+        let err = copy_string(as_unicode(&obj), &LocalProcess, false).unwrap_err();
+        assert!(!is_invalid_string(&err));
+    }
+
+    #[test]
+    fn test_is_invalid_string_survives_context() {
+        use anyhow::Context;
+
+        // if this regressed to an outermost-only downcast, --check-utf8 would silently do
+        // nothing, since every call site wraps the error
+        let err: Error = InvalidString::new("nope").into();
+        assert!(is_invalid_string(&err));
+
+        let wrapped = Err::<(), Error>(err)
+            .context("Failed to copy filename")
+            .unwrap_err();
+        assert!(is_invalid_string(&wrapped));
+
+        // and not the ordinary py3.13+ "wasn't a PyCodeObject" case, or we'd discard those too
+        let other =
+            format_err!("Failed to copy PyFrameObject").context("Failed to call get_stack_trace");
+        assert!(!is_invalid_string(&other));
     }
 
     #[test]

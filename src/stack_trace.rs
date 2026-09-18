@@ -6,7 +6,7 @@ use remoteprocess::{Pid, ProcessMemory};
 use serde_derive::Serialize;
 
 use crate::config::{Config, LineNo};
-use crate::python_data_access::{copy_bytes, copy_string};
+use crate::python_data_access::{copy_bytes, copy_string, is_invalid_string};
 use crate::python_interpreters::{
     CodeObject, FrameObject, InterpreterState, ThreadState, TupleObject,
 };
@@ -30,6 +30,9 @@ pub struct StackTrace {
     pub frames: Vec<Frame>,
     /// process commandline / parent process info
     pub process_info: Option<Arc<ProcessInfo>>,
+    /// Stands in for a discarded sample. Not serialized, to keep `dump --json` stable.
+    #[serde(skip)]
+    pub error: bool,
 }
 
 /// Information about a single function call in a stack trace
@@ -90,13 +93,24 @@ where
 
     let lineno = config.map(|c| c.lineno).unwrap_or(LineNo::NoLine);
     let dump_locals = config.map(|c| c.dump_locals).unwrap_or(0);
+    let check_utf8 = config.map(|c| c.check_utf8).unwrap_or(false);
 
     while !threads.is_null() {
         let thread = process
             .copy_pointer(threads)
             .context("Failed to copy PyThreadState")?;
 
-        let mut trace = get_stack_trace(&thread, process, dump_locals > 0, lineno)?;
+        let mut trace = match get_stack_trace(&thread, process, dump_locals > 0, lineno, check_utf8)
+        {
+            Ok(trace) => trace,
+            // a bad string means we read the wrong memory: discard the sample rather than
+            // report garbage, but keep it counted
+            Err(e) if is_invalid_string(&e) => {
+                warn!("discarding sample: {:#}", e);
+                return Ok(vec![StackTrace::error(0)]);
+            }
+            Err(e) => return Err(e),
+        };
         trace.owns_gil = trace.thread_id == gil_thread_id;
 
         ret.push(trace);
@@ -115,6 +129,7 @@ pub fn get_stack_trace<T, P>(
     process: &P,
     copy_locals: bool,
     lineno: LineNo,
+    check_utf8: bool,
 ) -> Result<StackTrace, Error>
 where
     T: ThreadState,
@@ -149,14 +164,14 @@ where
             .copy_pointer(frame.code())
             .context("Failed to copy PyCodeObject")?;
 
-        let filename = copy_string(code.filename(), process).context("Failed to copy filename");
+        let filename =
+            copy_string(code.filename(), process, check_utf8).context("Failed to copy filename");
 
         // Try to get qualname first (available in Python 3.11+), fall back to name
         let name = match code.qualname() {
-            Some(qualname_ptr) => {
-                copy_string(qualname_ptr, process).or_else(|_| copy_string(code.name(), process))
-            }
-            None => copy_string(code.name(), process),
+            Some(qualname_ptr) => copy_string(qualname_ptr, process, check_utf8)
+                .or_else(|_| copy_string(code.name(), process, check_utf8)),
+            None => copy_string(code.name(), process, check_utf8),
         }
         .context("Failed to copy function name");
 
@@ -167,6 +182,19 @@ where
         // would also have to figure out what the address of PyCode_Type is (which will be
         // easier if something like https://github.com/python/cpython/issues/100987#issuecomment-1487227139
         // is merged )
+        //
+        // a failed validity check is different: propagate rather than drop a frame, since it
+        // means this isn't a PyCodeObject at all
+        if let Err(e) = &filename {
+            if is_invalid_string(e) {
+                return Err(filename.unwrap_err());
+            }
+        }
+        if let Err(e) = &name {
+            if is_invalid_string(e) {
+                return Err(name.unwrap_err());
+            }
+        }
         if filename.is_err() || name.is_err() {
             frame_ptr = frame.back();
             set_last_frame_as_shim_entry(&mut frames);
@@ -204,7 +232,7 @@ where
 
         let locals = if copy_locals {
             Some(
-                get_locals(&code, frame_ptr, &frame, process)
+                get_locals(&code, frame_ptr, &frame, process, check_utf8)
                     .context("Failed to get local variables")?,
             )
         } else {
@@ -242,10 +270,39 @@ where
         active: true,
         os_thread_id: thread.native_thread_id(),
         process_info: None,
+        error: false,
     })
 }
 
+/// The frame name used for discarded samples
+pub const ERROR_FRAME_NAME: &str = "<error>";
+
 impl StackTrace {
+    /// Stand-in for an unparseable sample, so its cpu time isn't lost from the profile, only
+    /// its attribution. Carries no thread/process detail so all such samples share one bucket.
+    pub fn error(pid: Pid) -> StackTrace {
+        StackTrace {
+            pid,
+            thread_id: 0,
+            thread_name: None,
+            os_thread_id: None,
+            active: true,
+            owns_gil: false,
+            frames: vec![Frame {
+                name: ERROR_FRAME_NAME.to_owned(),
+                filename: String::from(""),
+                module: None,
+                short_filename: None,
+                line: 0,
+                locals: None,
+                is_entry: true,
+                is_shim_entry: true,
+            }],
+            process_info: None,
+            error: true,
+        }
+    }
+
     pub fn status_str(&self) -> &str {
         match (self.owns_gil, self.active) {
             (_, false) => "idle",
@@ -284,6 +341,7 @@ fn get_locals<C: CodeObject, F: FrameObject, P: ProcessMemory>(
     frameptr: *const F,
     frame: &F,
     process: &P,
+    check_utf8: bool,
 ) -> Result<Vec<LocalVariable>, Error> {
     let local_count = code.nlocals() as usize;
     let argcount = code.argcount() as usize;
@@ -300,7 +358,8 @@ fn get_locals<C: CodeObject, F: FrameObject, P: ProcessMemory>(
         let nameptr: *const C::StringObject =
             process.copy_struct(varnames.address(code.varnames() as usize, i))?;
 
-        let name = copy_string(nameptr, process).context("Failed to copy local variable name")?;
+        let name = copy_string(nameptr, process, check_utf8)
+            .context("Failed to copy local variable name")?;
         let addr: usize = process.copy_struct(locals_addr + i * ptr_size)?;
 
         // hack: handle things like None, True, False, small integer constants etc on Python 3.14
@@ -374,6 +433,21 @@ mod tests {
     use crate::python_bindings::v3_7_0::PyCodeObject;
     use crate::python_data_access::tests::to_byteobject;
     use remoteprocess::LocalProcess;
+
+    #[test]
+    fn test_error_trace() {
+        let trace = StackTrace::error(1234);
+        assert!(trace.error);
+        assert_eq!(trace.pid, 1234);
+        assert_eq!(trace.frames.len(), 1);
+        assert_eq!(trace.frames[0].name, ERROR_FRAME_NAME);
+
+        // no thread/process detail, so discarded samples all land in the same bucket
+        assert_eq!(trace.thread_id, 0);
+        assert!(trace.thread_name.is_none());
+        assert!(trace.os_thread_id.is_none());
+        assert!(trace.process_info.is_none());
+    }
 
     #[test]
     fn test_get_line_number() {
