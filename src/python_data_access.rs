@@ -12,31 +12,11 @@ use remoteprocess::ProcessMemory;
 /// Bytes read out of the target process aren't a well formed string. Its own type so callers
 /// can tell this apart from an ordinary read failure: only this one discards the sample.
 #[derive(Debug)]
-pub struct InvalidString {
-    detail: String,
-}
-
-impl InvalidString {
-    fn code_point(cp: u32) -> InvalidString {
-        InvalidString {
-            detail: format!("{cp:#x} is not a unicode scalar value"),
-        }
-    }
-
-    fn new(detail: impl Into<String>) -> InvalidString {
-        InvalidString {
-            detail: detail.into(),
-        }
-    }
-}
+pub struct InvalidString;
 
 impl std::fmt::Display for InvalidString {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(
-            f,
-            "invalid string read from target process: {}",
-            self.detail
-        )
+        write!(f, "invalid string read from target process")
     }
 }
 
@@ -50,13 +30,13 @@ pub fn is_invalid_string(err: &Error) -> bool {
 
 /// Copies a string from a target process. Attempts to handle unicode differences, which mostly seems to be working
 ///
-/// `strict` rejects anything inconsistent with the string's declared kind instead of
+/// `check_utf8` rejects anything inconsistent with the string's declared kind instead of
 /// substituting replacement characters. The `kind`/`ascii` bits below come from the target too,
 /// so bad data means this isn't the `PyUnicodeObject` we thought it was.
 pub fn copy_string<T: StringObject, P: ProcessMemory>(
     ptr: *const T,
     process: &P,
-    strict: bool,
+    check_utf8: bool,
 ) -> Result<String, Error> {
     let obj = process.copy_pointer(ptr)?;
     if obj.size() == 0 {
@@ -82,7 +62,7 @@ pub fn copy_string<T: StringObject, P: ProcessMemory>(
                 let cp = u32::from_ne_bytes(chunk.try_into().unwrap());
                 match char::from_u32(cp) {
                     Some(c) => ret.push(c),
-                    None if strict => return Err(InvalidString::code_point(cp).into()),
+                    None if check_utf8 => return Err(InvalidString.into()),
                     None => ret.push(char::REPLACEMENT_CHARACTER),
                 }
             }
@@ -95,24 +75,19 @@ pub fn copy_string<T: StringObject, P: ProcessMemory>(
                 .collect();
             match String::from_utf16(&units) {
                 Ok(s) => Ok(s),
-                Err(_) if strict => Err(InvalidString::new("unpaired utf16 surrogate").into()),
+                Err(_) if check_utf8 => Err(InvalidString.into()),
                 Err(e) => Err(e.into()),
             }
         }
         (1, true) => {
             // stricter than from_utf8 on purpose: a PyASCIIObject can't hold the multibyte
             // sequences from_utf8 would accept
-            if strict {
-                if let Some(&b) = bytes.iter().find(|&&b| b >= 0x80) {
-                    return Err(InvalidString::new(format!(
-                        "byte {b:#x} in a string flagged as ascii"
-                    ))
-                    .into());
-                }
+            if check_utf8 && bytes.iter().any(|&b| b >= 0x80) {
+                return Err(InvalidString.into());
             }
             match String::from_utf8(bytes) {
                 Ok(s) => Ok(s),
-                Err(_) if strict => Err(InvalidString::new("invalid utf8").into()),
+                Err(_) if check_utf8 => Err(InvalidString.into()),
                 Err(e) => Err(e.into()),
             }
         }
@@ -760,7 +735,7 @@ pub mod tests {
 
         // if this regressed to an outermost-only downcast, --check-utf8 would silently do
         // nothing, since every call site wraps the error
-        let err: Error = InvalidString::new("nope").into();
+        let err: Error = InvalidString.into();
         assert!(is_invalid_string(&err));
 
         let wrapped = Err::<(), Error>(err)
