@@ -100,23 +100,3 @@ impl Flamegraph {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::stack_trace::{StackTrace, ERROR_FRAME_NAME};
-
-    #[test]
-    fn test_increment_error_traces_fold_together() {
-        // all discarded samples have to collapse into one bucket, or the cpu time we kept
-        // would scatter across a frame per sample
-        let mut flamegraph = Flamegraph::new(true);
-        flamegraph.increment(&StackTrace::error(1234)).unwrap();
-        flamegraph.increment(&StackTrace::error(5678)).unwrap();
-
-        assert_eq!(
-            flamegraph.get_lines(),
-            vec![format!("{ERROR_FRAME_NAME} 2")]
-        );
-    }
-}

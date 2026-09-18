@@ -86,32 +86,26 @@ impl ConsoleViewer {
         self.stats.processes = 0;
         let mut last_pid = None;
         for trace in traces {
-            // '<error>' still counts into the function statistics (that's the point), but it
-            // isn't a real thread, so keep it out of the tallies and past the filters
-            if trace.error {
-                self.stats.errors += 1;
-            } else {
-                self.stats.threads += 1;
-                if last_pid != Some(trace.pid) {
-                    self.stats.processes += 1;
-                    last_pid = Some(trace.pid);
-                }
+            self.stats.threads += 1;
+            if last_pid != Some(trace.pid) {
+                self.stats.processes += 1;
+                last_pid = Some(trace.pid);
+            }
 
-                if !(self.config.include_idle || trace.active) {
-                    continue;
-                }
+            if !(self.config.include_idle || trace.active) {
+                continue;
+            }
 
-                if self.config.gil_only && !trace.owns_gil {
-                    continue;
-                }
+            if self.config.gil_only && !trace.owns_gil {
+                continue;
+            }
 
-                if trace.owns_gil {
-                    self.stats.gil += 1
-                }
+            if trace.owns_gil {
+                self.stats.gil += 1
+            }
 
-                if trace.active {
-                    self.stats.active += 1
-                }
+            if trace.active {
+                self.stats.active += 1
             }
 
             update_function_statistics(&mut self.stats.line_counts, trace, |frame| {

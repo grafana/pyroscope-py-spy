@@ -20,9 +20,9 @@ pub struct Config {
     /// the native stack traces
     pub native: bool,
 
-    /// Whether or not to validate that strings read out of the target process are well
-    /// formed. Samples containing a bad string are discarded and attributed to a single
-    /// '<error>' stack trace, so total cpu time is preserved.
+    /// Whether or not to validate that the function names, filenames and thread names read
+    /// out of the target process are well formed. A sample containing a bad string is
+    /// discarded and attributed to a single '<error>' stack trace, so total cpu time is kept.
     pub check_utf8: bool,
 
     // The following config options only apply when using py-spy as an application
@@ -210,16 +210,6 @@ impl Config {
             .help("Include stack traces for idle threads")
             .action(ArgAction::SetTrue);
 
-        let check_utf8 = Arg::new("check_utf8")
-            .long("check-utf8")
-            .help(
-                "Validate that the function names, filenames and thread names read from the \
-                   target process are well formed. If a string fails validation the whole \
-                   sample is discarded and counted under a single '<error>' stack trace, so \
-                   total cpu time is preserved",
-            )
-            .action(ArgAction::SetTrue);
-
         let gil = Arg::new("gil")
             .short('g')
             .long("gil")
@@ -358,9 +348,9 @@ impl Config {
                     .action(ArgAction::Set),
             );
 
-        let record = record.arg(native.clone()).arg(check_utf8.clone());
-        let top = top.arg(native.clone()).arg(check_utf8.clone());
-        let dump = dump.arg(native.clone()).arg(check_utf8.clone());
+        let record = record.arg(native.clone());
+        let top = top.arg(native.clone());
+        let dump = dump.arg(native.clone());
 
         // Nonblocking isn't an option for freebsd, remove
         #[cfg(not(target_os = "freebsd"))]
@@ -474,7 +464,6 @@ impl Config {
         });
 
         config.full_filenames = matches.get_flag("full_filenames");
-        config.check_utf8 = matches.get_flag("check_utf8");
         if cfg!(feature = "unwind") {
             config.native = matches.get_flag("native");
         }
@@ -534,25 +523,6 @@ mod tests {
         std::env::set_var("PYSPY_ALLOW_FREEBSD_ATTACH", "1");
         let args: Vec<String> = cmd.split_whitespace().map(|x| x.to_owned()).collect();
         Config::from_args(&args)
-    }
-
-    #[test]
-    fn test_parse_check_utf8() {
-        for cmd in [
-            "py-spy record --pid 1234 --output foo",
-            "py-spy top --pid 1234",
-            "py-spy dump --pid 1234",
-        ] {
-            assert!(!get_config(cmd).unwrap().check_utf8, "{cmd}");
-        }
-
-        for cmd in [
-            "py-spy record --pid 1234 --output foo --check-utf8",
-            "py-spy top --pid 1234 --check-utf8",
-            "py-spy dump --pid 1234 --check-utf8",
-        ] {
-            assert!(get_config(cmd).unwrap().check_utf8, "{cmd}");
-        }
     }
 
     #[test]
