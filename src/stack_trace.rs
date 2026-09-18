@@ -105,10 +105,7 @@ where
             Ok(trace) => trace,
             // a bad string means we read the wrong memory: discard the sample rather than
             // report garbage, but keep it counted
-            Err(e) if is_invalid_string(&e) => {
-                warn!("discarding sample: {:#}", e);
-                return Ok(vec![StackTrace::error(0)]);
-            }
+            Err(e) if is_invalid_string(&e) => return Ok(vec![StackTrace::error(0)]),
             Err(e) => return Err(e),
         };
         trace.owns_gil = trace.thread_id == gil_thread_id;

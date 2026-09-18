@@ -135,10 +135,7 @@ impl PythonSpy {
         match self._dispatch_stack_traces() {
             // a bad string means we read memory that isn't the object we expected, so the
             // sample is suspect. report it as a trace, not an error, to keep it counted
-            Err(e) if is_invalid_string(&e) => {
-                warn!("discarding sample from pid {}: {:#}", self.pid, e);
-                Ok(vec![StackTrace::error(self.pid)])
-            }
+            Err(e) if is_invalid_string(&e) => Ok(vec![StackTrace::error(self.pid)]),
             other => other,
         }
     }
