@@ -119,32 +119,25 @@ pub(crate) fn get_stack_trace_or_error<T: ThreadState, P: ProcessMemory>(
     copy_locals: bool,
     lineno: LineNo,
 ) -> StackTrace {
-    get_stack_trace(thread, process, copy_locals, lineno).unwrap_or_else(|error| {
-        debug!(
-            "Failed to unwind thread {}: {:#}",
-            thread.thread_id(),
-            error
-        );
-        StackTrace {
-            pid: 0,
-            thread_id: thread.thread_id(),
-            thread_name: None,
-            os_thread_id: thread.native_thread_id(),
-            active: true,
-            owns_gil: false,
-            error: true,
-            frames: vec![Frame {
-                name: "<error>".to_owned(),
-                filename: String::new(),
-                module: None,
-                short_filename: None,
-                line: 0,
-                locals: None,
-                is_entry: false,
-                is_shim_entry: false,
-            }],
-            process_info: None,
-        }
+    get_stack_trace(thread, process, copy_locals, lineno).unwrap_or_else(|_| StackTrace {
+        pid: 0,
+        thread_id: thread.thread_id(),
+        thread_name: None,
+        os_thread_id: thread.native_thread_id(),
+        active: true,
+        owns_gil: false,
+        error: true,
+        frames: vec![Frame {
+            name: "<error>".to_owned(),
+            filename: String::new(),
+            module: None,
+            short_filename: None,
+            line: 0,
+            locals: None,
+            is_entry: false,
+            is_shim_entry: false,
+        }],
+        process_info: None,
     })
 }
 
