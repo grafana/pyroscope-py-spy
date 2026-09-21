@@ -27,27 +27,40 @@ pub fn copy_string<T: StringObject, P: ProcessMemory>(
 
     let kind = obj.kind();
 
+    if !matches!(kind, 1 | 2 | 4) {
+        return Err(format_err!("Unknown string kind {}", kind));
+    }
+
     let bytes = process.copy(obj.address(ptr as usize), obj.size() * kind as usize)?;
 
     match (kind, obj.ascii()) {
-        (4, _) => {
-            #[allow(clippy::cast_ptr_alignment)]
-            let chars = unsafe {
-                std::slice::from_raw_parts(bytes.as_ptr() as *const char, bytes.len() / 4)
-            };
-            Ok(chars.iter().collect())
-        }
-        (2, _) => {
-            #[allow(clippy::cast_ptr_alignment)]
-            let chars = unsafe {
-                std::slice::from_raw_parts(bytes.as_ptr() as *const u16, bytes.len() / 2)
-            };
-            Ok(String::from_utf16(chars)?)
-        }
+        (4, _) => decode_ucs4(bytes),
+        (2, _) => decode_ucs2(bytes),
         (1, true) => Ok(String::from_utf8(bytes)?),
         (1, false) => Ok(bytes.iter().map(|&b| b as char).collect()),
         _ => Err(format_err!("Unknown string kind {}", kind)),
     }
+}
+
+fn decode_ucs2(bytes: Vec<u8>) -> Result<String, Error> {
+    #[cfg(target_endian = "little")]
+    let result = String::from_utf16le(&bytes);
+    #[cfg(target_endian = "big")]
+    let result = String::from_utf16be(&bytes);
+
+    Ok(result?)
+}
+
+fn decode_ucs4(bytes: Vec<u8>) -> Result<String, Error> {
+    if bytes.len() % 4 != 0 {
+        return Err(format_err!("UCS-4 byte length must be a multiple of 4"));
+    }
+
+    let chars = bytes
+        .chunks_exact(4)
+        .map(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()))
+        .map(char::try_from);
+    Ok(chars.collect::<Result<String, _>>()?)
 }
 
 /// Copies data from a PyBytesObject (currently only lnotab object)
@@ -591,6 +604,30 @@ pub mod tests {
             copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
         }
         ret
+    }
+
+    #[test]
+    fn test_decode_ucs4() {
+        let bytes: Vec<u8> = [0_u32, 0x41, 0xe9, 0x1f600, 0x10ffff]
+            .into_iter()
+            .flat_map(u32::to_ne_bytes)
+            .collect();
+        assert_eq!(decode_ucs4(bytes).unwrap(), "\0Aé😀\u{10ffff}");
+        assert_eq!(decode_ucs4(Vec::new()).unwrap(), "");
+    }
+
+    #[test]
+    fn test_decode_ucs4_invalid_code_points() {
+        for value in [0xd800_u32, 0xdfff, 0x110000, u32::MAX] {
+            assert!(decode_ucs4(value.to_ne_bytes().to_vec()).is_err());
+        }
+    }
+
+    #[test]
+    fn test_decode_ucs4_incomplete_code_points() {
+        for length in [1, 2, 3, 5, 6, 7] {
+            assert!(decode_ucs4(vec![0; length]).is_err());
+        }
     }
 
     #[test]

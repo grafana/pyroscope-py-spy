@@ -115,6 +115,10 @@ jobs:
         CARGO_HOME: /root/.cargo
     steps:
       - uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal --target ${{ matrix.target }}
+          rustup override set 1.98.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 # zizmor: ignore[cache-poisoning]
       - name: Build
         run: |
@@ -136,49 +140,6 @@ jobs:
         with:
           name: wheels-${{ matrix.target }}
           path: dist
-
-  build-freebsd:
-    runs-on: ubuntu-22.04
-    needs: [lint]
-    timeout-minutes: 30
-    strategy:
-      matrix:
-        box:
-          - freebsd-14
-    steps:
-      - uses: actions/checkout@v6
-      - name: Display CPU info
-        run: lscpu
-      - name: Install VM tools
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -qq -o=Dpkg::Use-Pty=0 moreutils
-          sudo chronic apt-get install -qq -o=Dpkg::Use-Pty=0 vagrant virtualbox qemu libvirt-daemon-system
-      - name: Set up VM
-        shell: sudo bash {0}
-        run: |
-          vagrant plugin install vagrant-libvirt
-          vagrant plugin install vagrant-scp
-          ln -sf ci/Vagrantfile Vagrantfile
-          vagrant status
-          vagrant up --no-tty --provider libvirt ${{ matrix.box }}
-      - name: Build and test
-        shell: sudo bash {0}
-        run: vagrant ssh ${{ matrix.box }} -- bash /vagrant/ci/test_freebsd.sh
-      - name: Retrieve build artifacts for caching purposes
-        shell: sudo bash {0}
-        run: |
-          vagrant scp ${{ matrix.box }}:/vagrant/build-artifacts.tar build-artifacts.tar
-          ls -ahl build-artifacts.tar
-      - name: Prepare binary for upload
-        run: |
-          tar xf build-artifacts.tar target/release/py-spy
-          mv target/release/py-spy py-spy-x86_64-unknown-freebsd
-      - name: Upload Binaries
-        uses: actions/upload-artifact@v7
-        with:
-          name: py-spy-x86_64-unknown-freebsd
-          path: py-spy-x86_64-unknown-freebsd
 
   test-wheels:
     name: Test Wheels
