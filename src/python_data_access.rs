@@ -27,8 +27,8 @@ pub fn copy_string<T: StringObject, P: ProcessMemory>(
 
     let kind = obj.kind();
 
-    if kind == 0 || kind > 4 { // validate kind before reading size * kind bytes
-        return Err(format_err!("Unknown string kind {}", kind))
+    if !matches!(kind, 1 | 2 | 4) {
+        return Err(format_err!("Unknown string kind {}", kind));
     }
 
     let bytes = process.copy(obj.address(ptr as usize), obj.size() * kind as usize)?;
