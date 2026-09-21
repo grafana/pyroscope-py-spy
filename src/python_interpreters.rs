@@ -54,6 +54,10 @@ pub trait FrameObject: Copy {
     fn lasti(&self) -> i32;
     fn back(&self) -> *mut Self;
     fn is_entry(&self) -> bool;
+    /// Whether this is a C-stack shim rather than a Python frame.
+    fn is_shim(&self) -> bool {
+        false
+    }
 }
 
 pub trait CodeObject: Copy {
@@ -472,6 +476,9 @@ impl ThreadState for v3_14_0::PyThreadState {
 
 impl FrameObject for v3_14_0::_PyInterpreterFrame {
     type CodeObject = v3_14_0::PyCodeObject;
+    fn is_shim(&self) -> bool {
+        self.is_entry()
+    }
     fn code(&self) -> *mut Self::CodeObject {
         unsafe { self.f_executable.bits as *mut v3_14_0::PyCodeObject }
     }
@@ -556,6 +563,9 @@ impl ThreadState for v3_13_0::PyThreadState {
 
 impl FrameObject for v3_13_0::_PyInterpreterFrame {
     type CodeObject = v3_13_0::PyCodeObject;
+    fn is_shim(&self) -> bool {
+        self.is_entry()
+    }
     fn code(&self) -> *mut Self::CodeObject {
         self.f_executable as *mut v3_13_0::PyCodeObject
     }
@@ -644,6 +654,9 @@ impl ThreadState for v3_12_0::PyThreadState {
 
 impl FrameObject for v3_12_0::_PyInterpreterFrame {
     type CodeObject = v3_12_0::PyCodeObject;
+    fn is_shim(&self) -> bool {
+        self.is_entry()
+    }
     fn code(&self) -> *mut Self::CodeObject {
         self.f_code
     }

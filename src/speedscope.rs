@@ -299,6 +299,7 @@ mod tests {
             os_thread_id: None,
             active: true,
             owns_gil: false,
+            error: false,
             frames: vec![frame],
             process_info: None,
         };

@@ -22,7 +22,7 @@ use crate::python_process_info::{
     PythonDebugOffsets, PythonProcessInfo,
 };
 use crate::python_threading::thread_name_lookup;
-use crate::stack_trace::{get_gil_threadid, get_stack_trace, StackTrace};
+use crate::stack_trace::{get_gil_threadid, get_stack_trace_or_error, StackTrace};
 use crate::version::Version;
 
 /// Lets you retrieve stack traces of a running python program
@@ -250,18 +250,12 @@ impl PythonSpy {
                 continue;
             }
 
-            let mut trace = get_stack_trace(
+            let mut trace = get_stack_trace_or_error(
                 &thread,
                 &self.process,
                 self.config.dump_locals > 0,
                 self.config.lineno,
-            )
-            .with_context(|| {
-                format!(
-                    "Failed to call get_stack_trace for thread {}",
-                    python_thread_id
-                )
-            })?;
+            );
 
             // Try getting the native thread id
 

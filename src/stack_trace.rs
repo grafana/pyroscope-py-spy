@@ -26,6 +26,8 @@ pub struct StackTrace {
     pub active: bool,
     /// Whether or not the thread held the GIL
     pub owns_gil: bool,
+    /// Whether Python unwinding failed; the frames contain only a synthetic <error> frame.
+    pub error: bool,
     /// The frames
     pub frames: Vec<Frame>,
     /// process commandline / parent process info
@@ -109,6 +111,43 @@ where
     Ok(ret)
 }
 
+/// Samples a thread without letting an unwind failure discard the other threads.
+/// Interpreter discovery uses the fallible `get_stack_trace` instead.
+pub(crate) fn get_stack_trace_or_error<T: ThreadState, P: ProcessMemory>(
+    thread: &T,
+    process: &P,
+    copy_locals: bool,
+    lineno: LineNo,
+) -> StackTrace {
+    get_stack_trace(thread, process, copy_locals, lineno).unwrap_or_else(|error| {
+        debug!(
+            "Failed to unwind thread {}: {:#}",
+            thread.thread_id(),
+            error
+        );
+        StackTrace {
+            pid: 0,
+            thread_id: thread.thread_id(),
+            thread_name: None,
+            os_thread_id: thread.native_thread_id(),
+            active: true,
+            owns_gil: false,
+            error: true,
+            frames: vec![Frame {
+                name: "<error>".to_owned(),
+                filename: String::new(),
+                module: None,
+                short_filename: None,
+                line: 0,
+                locals: None,
+                is_entry: false,
+                is_shim_entry: false,
+            }],
+            process_info: None,
+        }
+    })
+}
+
 /// Gets a stack trace for an individual thread
 pub fn get_stack_trace<T, P>(
     thread: &T,
@@ -140,16 +179,30 @@ where
         }
     };
 
+    // Count skipped shims too, so a corrupt chain cannot loop forever.
+    let mut frame_count = 0;
     while !frame_ptr.is_null() {
+        frame_count += 1;
+        if frame_count > 4096 {
+            return Err(format_err!("Max frame recursion depth reached"));
+        }
         let frame = process
             .copy_pointer(frame_ptr)
             .context("Failed to copy PyFrameObject")?;
+
+        // C-stack shim frames may not contain a code object (Python 3.13+).
+        // Identify them before reading code or strings, so real read errors propagate.
+        if frame.is_shim() {
+            frame_ptr = frame.back();
+            set_last_frame_as_shim_entry(&mut frames);
+            continue;
+        }
 
         let code = process
             .copy_pointer(frame.code())
             .context("Failed to copy PyCodeObject")?;
 
-        let filename = copy_string(code.filename(), process).context("Failed to copy filename");
+        let filename = copy_string(code.filename(), process).context("Failed to copy filename")?;
 
         // Try to get qualname first (available in Python 3.11+), fall back to name
         let name = match code.qualname() {
@@ -158,22 +211,7 @@ where
             }
             None => copy_string(code.name(), process),
         }
-        .context("Failed to copy function name");
-
-        // just skip processing the current frame if we can't load the filename or function name.
-        // this can happen in python 3.13+ since the f_executable isn't guaranteed to be
-        // a PyCodeObject. We could check the type (and mimic the logic of PyCode_Check here)
-        // but that would require extra overhead of reading the ob_type per frame - and we
-        // would also have to figure out what the address of PyCode_Type is (which will be
-        // easier if something like https://github.com/python/cpython/issues/100987#issuecomment-1487227139
-        // is merged )
-        if filename.is_err() || name.is_err() {
-            frame_ptr = frame.back();
-            set_last_frame_as_shim_entry(&mut frames);
-            continue;
-        }
-        let filename = filename?;
-        let name = name?;
+        .context("Failed to copy function name")?;
 
         // skip <shim> entries in python 3.12+
         // Unset file/function name in py3.13 means this is a shim.
@@ -223,10 +261,6 @@ where
             is_entry,
             is_shim_entry: false,
         });
-        if frames.len() > 4096 {
-            return Err(format_err!("Max frame recursion depth reached"));
-        }
-
         frame_ptr = frame.back();
     }
 
@@ -239,6 +273,7 @@ where
         thread_id: thread.thread_id(),
         thread_name: None,
         owns_gil: false,
+        error: false,
         active: true,
         os_thread_id: thread.native_thread_id(),
         process_info: None,
@@ -372,8 +407,311 @@ impl ProcessInfo {
 mod tests {
     use super::*;
     use crate::python_bindings::v3_7_0::PyCodeObject;
-    use crate::python_data_access::tests::to_byteobject;
+    use crate::python_bindings::{v3_11_0 as py, v3_12_0, v3_13_0, v3_14_0};
+    use crate::python_data_access::tests::{to_asciiobject, to_byteobject, AllocatedPyASCIIObject};
     use remoteprocess::LocalProcess;
+
+    // All pointers refer to live, boxed test objects. Fail selected reads without
+    // dereferencing invalid pointers in LocalProcess.
+    struct TestMemory {
+        fail_at: usize,
+    }
+
+    impl ProcessMemory for TestMemory {
+        fn read(&self, addr: usize, buf: &mut [u8]) -> Result<(), remoteprocess::Error> {
+            if addr == 0 || addr == self.fail_at {
+                return Err(remoteprocess::Error::Other("injected read failure".into()));
+            }
+            LocalProcess.read(addr, buf)
+        }
+    }
+
+    struct TestStack {
+        filename: Box<AllocatedPyASCIIObject>,
+        _name: Box<AllocatedPyASCIIObject>,
+        code: Box<py::PyCodeObject>,
+        frame: Box<py::_PyInterpreterFrame>,
+        cframe: Box<py::_PyCFrame>,
+        thread: py::PyThreadState,
+    }
+
+    impl TestStack {
+        fn new() -> Self {
+            let mut filename = Box::new(to_asciiobject("test.py"));
+            let mut name = Box::new(to_asciiobject("function"));
+            let mut code = Box::new(py::PyCodeObject {
+                co_filename: std::ptr::from_mut(&mut filename.base).cast(),
+                co_name: std::ptr::from_mut(&mut name.base).cast(),
+                co_qualname: std::ptr::from_mut(&mut name.base).cast(),
+                co_firstlineno: 42,
+                ..Default::default()
+            });
+            let mut frame = Box::new(py::_PyInterpreterFrame {
+                f_code: &mut *code,
+                // Python 3.11 entry frames must not be mistaken for shims.
+                is_entry: 1,
+                ..Default::default()
+            });
+            frame.prev_instr = code.co_code_adaptive.as_mut_ptr().cast();
+            let mut cframe = Box::new(py::_PyCFrame {
+                current_frame: &mut *frame,
+                ..Default::default()
+            });
+            let thread = py::PyThreadState {
+                thread_id: 123,
+                native_thread_id: 456,
+                cframe: &mut *cframe,
+                ..Default::default()
+            };
+            Self {
+                filename,
+                _name: name,
+                code,
+                frame,
+                cframe,
+                thread,
+            }
+        }
+
+        fn sample(&self, fail_at: usize) -> StackTrace {
+            get_stack_trace_or_error(&self.thread, &TestMemory { fail_at }, false, LineNo::First)
+        }
+    }
+
+    fn assert_error_trace(trace: &StackTrace) {
+        assert!(trace.error);
+        assert_eq!(trace.thread_id, 123);
+        assert_eq!(trace.os_thread_id, Some(456));
+        assert_eq!(trace.frames.len(), 1);
+        assert_eq!(
+            trace.frames[0],
+            Frame {
+                name: "<error>".into(),
+                filename: String::new(),
+                line: 0,
+                module: None,
+                short_filename: None,
+                locals: None,
+                is_entry: false,
+                is_shim_entry: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_unwind_read_errors() {
+        let stack = TestStack::new();
+        for addr in [
+            stack.thread.frame_address().unwrap(),
+            &*stack.frame as *const _ as usize,
+            &*stack.code as *const _ as usize,
+            stack.code.co_filename as usize,
+            stack.code.co_name as usize,
+        ] {
+            assert_error_trace(&stack.sample(addr));
+            // Discovery must still reject an unreadable candidate interpreter.
+            assert!(get_stack_trace(
+                &stack.thread,
+                &TestMemory { fail_at: addr },
+                false,
+                LineNo::First
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn test_partial_stack_is_discarded() {
+        let mut stack = TestStack::new();
+        let mut caller = py::_PyInterpreterFrame::default();
+        stack.frame.previous = &mut caller;
+        assert_error_trace(&stack.sample(&caller as *const _ as usize));
+    }
+
+    #[test]
+    fn test_invalid_ucs4_strings() {
+        let mut stack = TestStack::new();
+        let mut invalid = 0x110000u32;
+        let mut string = py::PyUnicodeObject::default();
+        string._base._base.length = 1;
+        string._base._base.state.set_kind(4);
+        string.data.ucs4 = &mut invalid;
+        let ptr = (&mut string as *mut py::PyUnicodeObject).cast();
+        let filename = stack.code.co_filename;
+        stack.code.co_filename = ptr;
+        assert_error_trace(&stack.sample(0));
+        stack.code.co_filename = filename;
+        stack.code.co_qualname = ptr;
+        let fallback = stack.sample(0);
+        assert!(!fallback.error);
+        assert_eq!(fallback.frames[0].name, "function");
+        stack.code.co_name = ptr;
+        assert_error_trace(&stack.sample(0));
+    }
+
+    #[test]
+    fn test_success_empty_and_qualname_fallback() {
+        let mut stack = TestStack::new();
+        let trace = stack.sample(0);
+        assert!(!trace.error);
+        assert_eq!(trace.frames.len(), 1);
+        assert_eq!(trace.frames[0].name, "function");
+        assert_eq!(trace.frames[0].line, 42);
+        assert!(trace.frames[0].is_entry);
+
+        stack.code.co_qualname = std::ptr::null_mut();
+        let trace = stack.sample(0);
+        assert!(!trace.error);
+        assert_eq!(trace.frames[0].name, "function");
+
+        stack.cframe.current_frame = std::ptr::null_mut();
+        let trace = stack.sample(0);
+        assert!(!trace.error);
+        assert!(trace.frames.is_empty());
+    }
+
+    #[test]
+    fn test_line_number_failure_is_not_an_error_trace() {
+        let stack = TestStack::new();
+        let trace = get_stack_trace_or_error(
+            &stack.thread,
+            &TestMemory { fail_at: 0 },
+            false,
+            LineNo::LastInstruction,
+        );
+        assert!(!trace.error);
+        assert_eq!(trace.frames[0].line, 0);
+    }
+
+    #[test]
+    fn test_python_spy_keeps_healthy_threads_and_error_metadata() {
+        use crate::{config::LockingStrategy, python_spy::PythonSpy, version::Version};
+
+        let mut broken = TestStack::new();
+        let mut healthy = TestStack::new();
+        // A malformed string exercises the complete sampling path without races
+        // or needing to attach to another process.
+        broken.filename.base.length = 4096;
+        healthy.thread.thread_id = 789;
+        healthy.thread.native_thread_id = 987;
+        broken.thread.next = &mut healthy.thread;
+        let gil_holder = &mut broken.thread as *mut _;
+        let mut interpreter = py::PyInterpreterState::default();
+        interpreter.threads.head = &mut broken.thread;
+        let pid = std::process::id() as Pid;
+        let mut spy = PythonSpy {
+            pid,
+            process: remoteprocess::Process::new(pid).unwrap(),
+            version: Version {
+                major: 3,
+                minor: 11,
+                patch: 0,
+                release_flags: String::new(),
+                build_metadata: None,
+            },
+            interpreter_address: &interpreter as *const _ as usize,
+            threadstate_address: &gil_holder as *const _ as usize,
+            config: Config {
+                blocking: LockingStrategy::AlreadyLocked,
+                lineno: LineNo::First,
+                ..Default::default()
+            },
+            #[cfg(feature = "unwind")]
+            native: None,
+            short_filenames: Default::default(),
+            python_thread_ids: Default::default(),
+            python_thread_names: [(123, "broken".to_owned()), (789, "healthy".to_owned())].into(),
+            debug_offsets: None,
+            #[cfg(target_os = "linux")]
+            dockerized: false,
+        };
+        let traces = spy.get_stack_traces().unwrap();
+        assert_eq!(traces.len(), 2);
+        let broken = &traces[0];
+        assert!(broken.error);
+        assert_eq!(broken.pid, pid);
+        assert_eq!(broken.thread_id, 123);
+        assert_eq!(broken.os_thread_id, Some(456));
+        assert_eq!(broken.thread_name.as_deref(), Some("broken"));
+        assert!(broken.owns_gil);
+        assert_eq!(broken.frames.len(), 1);
+        assert_eq!(broken.frames[0].name, "<error>");
+        let healthy = &traces[1];
+        assert!(!healthy.error);
+        assert_eq!(healthy.pid, pid);
+        assert_eq!(healthy.thread_id, 789);
+        assert_eq!(healthy.thread_name.as_deref(), Some("healthy"));
+        assert!(!healthy.owns_gil);
+        assert_eq!(healthy.frames[0].name, "function");
+
+        spy.config.gil_only = true;
+        let traces = spy.get_stack_traces().unwrap();
+        assert_eq!(traces.len(), 1);
+        assert!(traces[0].error);
+        assert!(traces[0].owns_gil);
+    }
+
+    #[test]
+    fn test_shims_skip_code_reads() {
+        macro_rules! check_shim {
+            ($py:ident) => {{
+                let mut shim = $py::_PyInterpreterFrame {
+                    owner: 3,
+                    ..Default::default()
+                };
+                let trace = get_stack_trace_or_error(
+                    &FrameThread::<$py::PyThreadState> { frame: &mut shim },
+                    &TestMemory { fail_at: 0 },
+                    false,
+                    LineNo::NoLine,
+                );
+                assert!(!trace.error);
+                assert!(trace.frames.is_empty());
+                // A cycle consisting only of shims must still hit the depth limit.
+                shim.previous = &mut shim;
+                let trace = get_stack_trace_or_error(
+                    &FrameThread::<$py::PyThreadState> { frame: &mut shim },
+                    &TestMemory { fail_at: 0 },
+                    false,
+                    LineNo::NoLine,
+                );
+                assert_error_trace(&trace);
+            }};
+        }
+        check_shim!(v3_12_0);
+        check_shim!(v3_13_0);
+        check_shim!(v3_14_0);
+    }
+
+    // Expose a frame chain directly while retaining each Python version's real
+    // FrameObject implementation, without coupling tests to thread indirection.
+    #[derive(Clone, Copy)]
+    struct FrameThread<T: ThreadState> {
+        frame: *mut T::FrameObject,
+    }
+
+    impl<T: ThreadState> ThreadState for FrameThread<T> {
+        type FrameObject = T::FrameObject;
+        type InterpreterState = T::InterpreterState;
+        fn interp(&self) -> *mut Self::InterpreterState {
+            std::ptr::null_mut()
+        }
+        fn frame_address(&self) -> Option<usize> {
+            None
+        }
+        fn frame(&self, _: Option<usize>) -> *mut Self::FrameObject {
+            self.frame
+        }
+        fn thread_id(&self) -> u64 {
+            123
+        }
+        fn native_thread_id(&self) -> Option<u64> {
+            Some(456)
+        }
+        fn next(&self) -> *mut Self {
+            std::ptr::null_mut()
+        }
+    }
 
     #[test]
     fn test_get_line_number() {
