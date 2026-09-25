@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v6
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 # zizmor: ignore[cache-poisoning]
@@ -61,11 +61,6 @@ jobs:
       - name: Test (retry#2)
         run: cargo test --release
         if: steps.test1.outcome=='failure'
-      - name: Build Wheel
-        run: |
-          pip install --upgrade maturin
-          maturin build --release -o dist --all-features
-        if: runner.os == 'Windows'
       - name: Build Wheel - universal2
         env:
           DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
@@ -82,12 +77,6 @@ jobs:
         run: |
           python3 -c "import shutil; import glob; wheels = glob.glob('dist/*.whl'); [shutil.move(wheel, wheel.replace('py3', 'py2.py3')) for wheel in wheels if 'py2' not in wheel]"
         if: runner.os != 'Linux'
-      - name: Upload Windows Wheels
-        uses: actions/upload-artifact@v7
-        with:
-          name: wheels-windows
-          path: dist
-        if: runner.os == 'Windows'
       - name: Upload Macos Wheels
         uses: actions/upload-artifact@v7
         with:
@@ -190,7 +179,7 @@ jobs:
             3.14.6,
             3.14.7,
           ]
-        os: [ubuntu-22.04, macos-latest, windows-latest, ubuntu-22.04-arm]
+        os: [ubuntu-22.04, macos-latest, ubuntu-22.04-arm]
         # some versions of python can't be tested on GHA with osx because of SIP:
         exclude:
           - os: macos-latest
@@ -201,8 +190,6 @@ jobs:
             python-version: 3.6.7
           - os: macos-latest
             python-version: 3.6.15
-          - os: windows-latest
-            python-version: 3.6.15
           - os: ubuntu-22.04
             python-version: 3.6.15
           - os: ubuntu-22.04-arm
@@ -214,8 +201,6 @@ jobs:
           - os: ubuntu-22.04-arm
             python-version: 3.7.1
           - os: macos-latest
-            python-version: 3.7.17
-          - os: windows-latest
             python-version: 3.7.17
           - os: ubuntu-22.04-arm
             python-version: 3.7.17
@@ -227,8 +212,6 @@ jobs:
             python-version: 3.8.0
           - os: macos-latest
             python-version: 3.8.18
-          - os: windows-latest
-            python-version: 3.8.18
           - os: macos-latest
             python-version: 3.9.0
           - os: ubuntu-22.04
@@ -236,8 +219,6 @@ jobs:
           - os: ubuntu-22.04-arm
             python-version: 3.9.0
           - os: macos-latest
-            python-version: 3.9.25
-          - os: windows-latest
             python-version: 3.9.25
           - os: macos-latest
             python-version: 3.10.0
@@ -247,15 +228,9 @@ jobs:
             python-version: 3.10.0
           - os: macos-latest
             python-version: 3.10.21
-          - os: windows-latest
-            python-version: 3.10.21
           - os: macos-latest
             python-version: 3.11.16
-          - os: windows-latest
-            python-version: 3.11.16
           - os: macos-latest
-            python-version: 3.12.14
-          - os: windows-latest
             python-version: 3.12.14
 
     steps:
