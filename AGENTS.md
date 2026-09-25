@@ -61,6 +61,26 @@ design around them, optimize them, or file issues whose impact is limited to the
 - Windows, FreeBSD, and Python bindings older than 3.10.
 - `examples/`, `ci/`, and the maturin/PyPI wheel jobs in `.github/workflows/build.yml`.
 
+## Python 3.13+ frame handling
+
+`src/python_interpreters.rs` classifies `_PyInterpreterFrame` the way CPython's own
+out-of-process profilers do (`_testexternalinspection.c` in 3.13,
+`_remote_debugging_module.c` in 3.14): skip by `owner` and a NULL executable, via
+`FrameObject::is_python_frame()`, before reading the code object.
+
+- Free-threaded (`Py_GIL_DISABLED`) builds are not supported. The bindings are generated
+  from the default build, whose `_PyInterpreterFrame` layout and `Py_TAG_BITS` differ.
+  Reason about tagging with the default build only.
+- 3.14 `f_executable` is a `_PyStackRef`. `code()` masks `Py_TAG_BITS` because the
+  sentinels `PyStackRef_NULL` (`bits == 1`) and `PyStackRef_None`
+  (`&_Py_NoneStruct | 1`) are tagged, so a NULL check needs the mask.
+- 3.14 `lasti()` deliberately does not mask. On the default build a stackref is tagged
+  only for immortal objects, and code objects are never immortal in 3.14 (deep-freeze was
+  removed in 3.13; constant interning immortalizes strings, tuples, frozensets and slices,
+  not code). Frames whose executable is a tagged sentinel are filtered by
+  `is_python_frame()` before `lasti()` runs, so it only ever sees a plain pointer. Revisit
+  if CPython starts tagging code stackrefs.
+
 ## Changing the public API
 
 Anything in "How pyroscope-python uses it" is a contract. Changing it needs a matching
