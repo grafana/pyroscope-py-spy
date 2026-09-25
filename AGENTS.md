@@ -61,12 +61,17 @@ design around them, optimize them, or file issues whose impact is limited to the
 - Windows, FreeBSD, and Python bindings older than 3.10.
 - `examples/`, `ci/`, and the maturin/PyPI wheel jobs in `.github/workflows/build.yml`.
 
-## Python 3.13+ frame handling
+## Python 3.12+ frame handling
 
 `src/python_interpreters.rs` classifies `_PyInterpreterFrame` the way CPython's own
 out-of-process profilers do (`_testexternalinspection.c` in 3.13,
 `_remote_debugging_module.c` in 3.14): skip by `owner` and a NULL executable, via
-`FrameObject::is_python_frame()`, before reading the code object.
+`FrameObject::is_python_frame()`, before reading the code object. 3.12 skips by `owner`
+only; its entry frame is the only `FRAME_OWNED_BY_CSTACK` frame.
+
+- 3.13+ also pushes `FRAME_OWNED_BY_THREAD` frames with a real `<shim>` code object
+  (`CALL_ALLOC_AND_ENTER_INIT`). They pass `is_python_frame()` and are dropped by the
+  `<shim>` filename check in `get_stack_trace`.
 
 - Free-threaded (`Py_GIL_DISABLED`) builds are not supported. The bindings are generated
   from the default build, whose `_PyInterpreterFrame` layout and `Py_TAG_BITS` differ.

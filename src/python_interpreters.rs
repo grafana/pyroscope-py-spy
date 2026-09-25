@@ -678,6 +678,10 @@ impl FrameObject for v3_12_0::_PyInterpreterFrame {
         // https://github.com/python/cpython/pull/108036#issuecomment-1684458828
         self.owner as v3_12_0::_frameowner == v3_12_0::_frameowner_FRAME_OWNED_BY_CSTACK
     }
+    fn is_python_frame(&self) -> bool {
+        // https://github.com/python/cpython/blob/v3.12.0/Python/ceval.c#L688-L692
+        self.owner as v3_12_0::_frameowner != v3_12_0::_frameowner_FRAME_OWNED_BY_CSTACK
+    }
 }
 
 impl Object for v3_12_0::PyObject {

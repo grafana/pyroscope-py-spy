@@ -175,7 +175,7 @@ where
         let filename = filename?;
         let name = name?;
 
-        // skip <shim> entries in python 3.12+
+        // skip <shim> entries in python 3.13+
         // Unset file/function name in py3.13 means this is a shim.
         if filename.is_empty() || filename == "<shim>" {
             frame_ptr = frame.back();
