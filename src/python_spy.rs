@@ -287,7 +287,9 @@ impl PythonSpy {
                 trace.os_thread_id = os_thread_id.map(|id| id as u64);
             }
 
-            trace.thread_name = self._get_python_thread_name(python_thread_id);
+            if self.config.include_thread_names {
+                trace.thread_name = self._get_python_thread_name(python_thread_id);
+            }
             trace.owns_gil = owns_gil;
             trace.pid = self.process.pid;
 
