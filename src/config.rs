@@ -20,6 +20,9 @@ pub struct Config {
     /// the native stack traces
     pub native: bool,
 
+    /// Whether or not to look up python thread names from the `threading` module
+    pub include_thread_names: bool,
+
     // The following config options only apply when using py-spy as an application
     #[doc(hidden)]
     pub command: String,
@@ -123,6 +126,7 @@ impl Default for Config {
             sampling_rate: 100,
             duration: RecordDuration::Unlimited,
             native: false,
+            include_thread_names: true,
             gil_only: false,
             include_idle: false,
             include_thread_ids: false,
