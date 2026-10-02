@@ -18,8 +18,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: 3.11
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
@@ -32,21 +32,19 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 # zizmor: ignore[cache-poisoning]
       - name: Install Dependencies
         run: sudo apt install libunwind-dev
         if: runner.os == 'Linux'
-      - uses: actions/setup-python@v6
-        with:
-          python-version: 3.9
       - name: Build
         run: cargo build --release --verbose --examples
       - name: Build library
         run: cargo build --release --verbose --lib --no-default-features
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
-          python-version: 3.9
+          # Windows on arm64 has no CPython builds before 3.11
+          python-version: ${{ matrix.os == 'windows-11-arm' && '3.11' || '3.9' }}
       - name: Install optional numpy dependency
         run: pip install numpy>=2
       - name: Test
@@ -103,7 +101,7 @@ jobs:
         RUSTUP_HOME: /root/.rustup
         CARGO_HOME: /root/.cargo
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install Rust toolchain
         run: |
           rustup toolchain install 1.98.0 --profile minimal --target ${{ matrix.target }}
@@ -234,12 +232,24 @@ jobs:
             python-version: 3.12.14
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           pattern: wheels-*
           merge-multiple: true
-      - uses: actions/setup-python@v6
+      # The windows-11-arm runner includes a few versions of Python, and the
+      # installer downloaded by actions/setup-python does not cleanly remove
+      # all registry entries, so the leftover newer install blocks any older
+      # patch release. See actions/setup-python#1267.
+      - name: Remove Python registry entries
+        run: |
+          . ./ci/remove_python_registry_entries.ps1
+          Remove-RegistryEntries -Architecture arm64 -MajorVersion 3 -MinorVersion 12
+          Remove-RegistryEntries -Architecture arm64 -MajorVersion 3 -MinorVersion 13
+          Remove-RegistryEntries -Architecture arm64 -MajorVersion 3 -MinorVersion 14
+        if: matrix.os == 'windows-11-arm'
+        continue-on-error: true
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install wheel
@@ -284,7 +294,7 @@ jobs:
         python-version: ["3.13", "3.14"]
         distribution: [alpine, slim-bookworm, slim-trixie]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           name: wheels-x86_64-unknown-linux-musl
@@ -317,7 +327,7 @@ jobs:
       - name: Install Dependencies
         run: sudo apt install libunwind-dev
         if: runner.os == 'Linux'
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: 3.9
       - name: Push to PyPi
@@ -328,7 +338,7 @@ jobs:
           pip install --upgrade wheel pip setuptools twine
           twine upload *
           rm *
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Push to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
