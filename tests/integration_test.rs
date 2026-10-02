@@ -167,7 +167,7 @@ fn test_thread_names() {
 }
 
 #[test]
-fn test_thread_names_disabled() {
+fn test_skip_thread_names() {
     #[cfg(target_os = "macos")]
     {
         // We need root permissions here to run this on OSX
@@ -176,17 +176,15 @@ fn test_thread_names_disabled() {
         }
     }
     let config = Config {
+        collect_thread_names: false,
         include_idle: true,
-        include_thread_names: false,
         ..Default::default()
     };
     let mut runner = TestRunner::new(config, "./tests/scripts/thread_names.py");
 
     let traces = runner.spy.get_stack_traces().unwrap();
     assert_eq!(traces.len(), 11);
-    for trace in traces.iter() {
-        assert!(trace.thread_name.is_none());
-    }
+    assert!(traces.iter().all(|trace| trace.thread_name.is_none()));
 }
 
 #[test]
@@ -543,12 +541,13 @@ fn test_negative_linenumber_increment() {
     // Python 3.12 inlined comprehensions - see https://peps.python.org/pep-0709/
     match (runner.spy.version.major, runner.spy.version.minor) {
         (3, 0..=11) => {
-            let expected_name = if runner.spy.version.minor >= 11 {
+            // 3.11 added co_qualname, which py-spy reports in preference to co_name
+            let listcomp = if runner.spy.version.minor >= 11 {
                 "f.<locals>.<listcomp>"
             } else {
                 "<listcomp>"
             };
-            assert_eq!(trace.frames[0].name, expected_name);
+            assert_eq!(trace.frames[0].name, listcomp);
             assert!(trace.frames[0].line >= 5 && trace.frames[0].line <= 10);
             assert_eq!(trace.frames[1].name, "f");
             assert!(trace.frames[1].line >= 5 && trace.frames[0].line <= 10);
