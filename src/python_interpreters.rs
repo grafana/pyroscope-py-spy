@@ -84,7 +84,7 @@ pub trait CodeObject: Copy {
 }
 
 pub trait BytesObject: Copy {
-    fn size(&self) -> isize;
+    fn size(&self) -> Result<usize>;
     fn address(&self, base: usize) -> Result<usize>;
 }
 
@@ -92,7 +92,7 @@ pub trait StringObject: Copy {
     fn ob_type(&self) -> usize;
     fn ascii(&self) -> bool;
     fn kind(&self) -> u32;
-    fn size(&self) -> isize;
+    fn size(&self) -> Result<usize>;
     fn address(&self, base: usize) -> Result<usize>;
 }
 
@@ -384,8 +384,9 @@ macro_rules! CompactCodeObjectImpl {
 macro_rules! Python3Impl {
     ($py: ident) => {
         impl BytesObject for $py::PyBytesObject {
-            fn size(&self) -> isize {
-                self.ob_base.ob_size
+            fn size(&self) -> Result<usize> {
+                usize::try_from(self.ob_base.ob_size)
+                    .map_err(|_| format_err!("Negative byte length"))
             }
             fn address(&self, base: usize) -> Result<usize> {
                 base.checked_add(offset_of(self, &self.ob_sval))
@@ -400,8 +401,9 @@ macro_rules! Python3Impl {
             fn ascii(&self) -> bool {
                 self._base._base.state.ascii() != 0
             }
-            fn size(&self) -> isize {
-                self._base._base.length
+            fn size(&self) -> Result<usize> {
+                usize::try_from(self._base._base.length)
+                    .map_err(|_| format_err!("Negative string length"))
             }
             fn kind(&self) -> u32 {
                 self._base._base.state.kind()
@@ -410,7 +412,7 @@ macro_rules! Python3Impl {
             fn address(&self, base: usize) -> Result<usize> {
                 if self._base._base.state.compact() == 0 {
                     let address = unsafe { self.data.any as usize };
-                    if self.size() > 0 && address == 0 {
+                    if self.size()? > 0 && address == 0 {
                         return Err(format_err!("Null external string data"));
                     }
                     return Ok(address);
@@ -908,8 +910,8 @@ Python3Impl!(v3_3_7);
 PythonCommonImpl!(v2_7_15, PyStringObject);
 PythonCodeObjectImpl!(v2_7_15, PyStringObject, PyStringObject, ob_type);
 impl BytesObject for v2_7_15::PyStringObject {
-    fn size(&self) -> isize {
-        self.ob_size
+    fn size(&self) -> Result<usize> {
+        usize::try_from(self.ob_size).map_err(|_| format_err!("Negative byte length"))
     }
     fn address(&self, base: usize) -> Result<usize> {
         base.checked_add(offset_of(self, &self.ob_sval))
@@ -927,8 +929,8 @@ impl StringObject for v2_7_15::PyStringObject {
     fn kind(&self) -> u32 {
         1
     }
-    fn size(&self) -> isize {
-        self.ob_size
+    fn size(&self) -> Result<usize> {
+        usize::try_from(self.ob_size).map_err(|_| format_err!("Negative string length"))
     }
     fn address(&self, base: usize) -> Result<usize> {
         base.checked_add(offset_of(self, &self.ob_sval))

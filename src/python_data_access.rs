@@ -25,7 +25,7 @@ pub fn copy_string<T: StringObject, P: ProcessMemory>(
             ptr as usize
         ));
     }
-    let length = usize::try_from(obj.size()).map_err(|_| format_err!("Negative string length"))?;
+    let length = obj.size()?;
     if length >= 4096 {
         return Err(format_err!("Refusing to copy {} chars of a string", length));
     }
@@ -87,7 +87,7 @@ pub fn copy_bytes<T: BytesObject, P: ProcessMemory>(
     process: &P,
 ) -> Result<Vec<u8>, Error> {
     let obj = copy_pointer(process, ptr)?;
-    let size = usize::try_from(obj.size()).map_err(|_| format_err!("Negative byte length"))?;
+    let size = obj.size()?;
     if size >= 65536 {
         return Err(format_err!("Refusing to copy {} bytes", size));
     }
