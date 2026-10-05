@@ -25,14 +25,9 @@ pub fn copy_string<T: StringObject, P: ProcessMemory>(
             ptr as usize
         ));
     }
-    if obj.size() == 0 {
-        return Ok(String::new());
-    }
-    if obj.size() >= 4096 {
-        return Err(format_err!(
-            "Refusing to copy {} chars of a string",
-            obj.size()
-        ));
+    let length = usize::try_from(obj.size()).map_err(|_| format_err!("Negative string length"))?;
+    if length >= 4096 {
+        return Err(format_err!("Refusing to copy {} chars of a string", length));
     }
 
     let kind = obj.kind();
@@ -40,10 +35,20 @@ pub fn copy_string<T: StringObject, P: ProcessMemory>(
     if !matches!(kind, 1 | 2 | 4) {
         return Err(format_err!("Unknown string kind {}", kind));
     }
+    let ascii = obj.ascii();
+    if ascii && kind != 1 {
+        return Err(format_err!("ASCII string has non-one-byte kind {}", kind));
+    }
+    if length == 0 {
+        return Ok(String::new());
+    }
 
-    let bytes = process.copy(obj.address(ptr as usize), obj.size() * kind as usize)?;
+    // Length is below 4096 and kind is at most 4, so this cannot overflow.
+    let byte_length = length * kind as usize;
+    let address = obj.address(ptr as usize)?;
+    let bytes = process.copy(address, byte_length)?;
 
-    match (kind, obj.ascii()) {
+    match (kind, ascii) {
         (4, _) => decode_ucs4(bytes),
         (2, _) => decode_ucs2(bytes),
         (1, true) => Ok(String::from_utf8(bytes)?),
@@ -79,11 +84,15 @@ pub fn copy_bytes<T: BytesObject, P: ProcessMemory>(
     process: &P,
 ) -> Result<Vec<u8>, Error> {
     let obj = copy_pointer(process, ptr)?;
-    let size = obj.size();
+    let size = usize::try_from(obj.size()).map_err(|_| format_err!("Negative byte length"))?;
     if size >= 65536 {
         return Err(format_err!("Refusing to copy {} bytes", size));
     }
-    Ok(process.copy(obj.address(ptr as usize), size as usize)?)
+    let address = obj.address(ptr as usize)?;
+    address
+        .checked_add(size)
+        .ok_or_else(|| format_err!("Byte range overflow"))?;
+    Ok(process.copy(address, size)?)
 }
 
 /// Copies a i64 from a PyLongObject. Returns the value + if it overflowed
@@ -553,10 +562,12 @@ pub mod tests {
     // the idea here is to create various cpython interpretator structs locally
     // and then test out that the above code handles appropriately
     use super::*;
+    use crate::python_bindings::v2_7_15;
     use crate::python_bindings::v3_7_0::{
         PyASCIIObject, PyBytesObject, PyUnicodeObject, PyVarObject,
     };
     use remoteprocess::LocalProcess;
+    use std::cell::Cell;
     use std::ptr::copy_nonoverlapping;
 
     // python stores data after pybytesobject/pyasciiobject. hack by initializing a 4k buffer for testing.
@@ -596,6 +607,31 @@ pub mod tests {
             );
         }
         ret
+    }
+
+    // Simulate a remote process where even an invalid payload address can contain
+    // plausible symbol bytes. Only the header is read from local memory.
+    struct FakeStringMemory<'a> {
+        header: &'a PyUnicodeObject,
+        payload_address: usize,
+        payload: &'a [u8],
+        payload_reads: Cell<usize>,
+    }
+
+    impl ProcessMemory for FakeStringMemory<'_> {
+        fn read(&self, addr: usize, buf: &mut [u8]) -> Result<(), remoteprocess::Error> {
+            if addr == self.header as *const PyUnicodeObject as usize {
+                return LocalProcess.read(addr, buf);
+            }
+            if addr == self.payload_address && buf.len() <= self.payload.len() {
+                self.payload_reads.set(self.payload_reads.get() + 1);
+                buf.copy_from_slice(&self.payload[..buf.len()]);
+                return Ok(());
+            }
+            Err(remoteprocess::Error::Other(format!(
+                "Unmapped fake memory at {addr:#x}"
+            )))
+        }
     }
 
     pub fn to_asciiobject(input: &str) -> AllocatedPyASCIIObject {
@@ -687,6 +723,189 @@ pub mod tests {
             }
         )
         .is_err());
+    }
+
+    #[test]
+    fn test_copy_string_rejects_negative_length() {
+        let mut obj = to_asciiobject("test");
+        obj.base.length = -1;
+        let unicode: &PyUnicodeObject = unsafe { std::mem::transmute(&obj.base) };
+        assert_eq!(
+            copy_string(unicode, &LocalProcess, &PyTypes { code: 0, string: 0 })
+                .unwrap_err()
+                .to_string(),
+            "Negative string length"
+        );
+    }
+
+    #[test]
+    fn test_copy_string_validates_empty_header() {
+        let mut obj = PyUnicodeObject::default();
+        assert_eq!(
+            copy_string(&obj, &LocalProcess, &PyTypes { code: 0, string: 0 })
+                .unwrap_err()
+                .to_string(),
+            "Unknown string kind 0"
+        );
+
+        obj._base._base.state.set_kind(2);
+        obj._base._base.state.set_ascii(1);
+        assert_eq!(
+            copy_string(&obj, &LocalProcess, &PyTypes { code: 0, string: 0 })
+                .unwrap_err()
+                .to_string(),
+            "ASCII string has non-one-byte kind 2"
+        );
+
+        obj._base._base.state.set_kind(1);
+        assert_eq!(
+            copy_string(&obj, &LocalProcess, &PyTypes { code: 0, string: 0 }).unwrap(),
+            ""
+        );
+    }
+
+    #[test]
+    fn test_copy_string_rejects_nonempty_null_external_data() {
+        let mut obj = PyUnicodeObject::default();
+        obj._base._base.length = 1;
+        obj._base._base.state.set_kind(1);
+        assert_eq!(
+            copy_string(&obj, &LocalProcess, &PyTypes { code: 0, string: 0 })
+                .unwrap_err()
+                .to_string(),
+            "Null external string data"
+        );
+    }
+
+    #[test]
+    fn test_copy_string_rejects_ascii_with_multibyte_kind() {
+        let mut obj = PyUnicodeObject::default();
+        obj._base._base.length = 1;
+        obj._base._base.state.set_kind(4);
+        obj._base._base.state.set_ascii(1);
+        assert_eq!(
+            copy_string(&obj, &LocalProcess, &PyTypes { code: 0, string: 0 })
+                .unwrap_err()
+                .to_string(),
+            "ASCII string has non-one-byte kind 4"
+        );
+    }
+
+    #[test]
+    fn test_fake_memory_reads_valid_symbol() {
+        let mut obj = PyUnicodeObject::default();
+        obj._base._base.length = 6;
+        obj._base._base.state.set_kind(1);
+        obj.data.any = 0x1000usize as *mut _;
+        let memory = FakeStringMemory {
+            header: &obj,
+            payload_address: 0x1000,
+            payload: b"symbol",
+            payload_reads: Cell::new(0),
+        };
+
+        assert_eq!(
+            copy_string(&obj, &memory, &PyTypes { code: 0, string: 0 }).unwrap(),
+            "symbol"
+        );
+        assert_eq!(memory.payload_reads.get(), 1);
+    }
+
+    #[test]
+    fn test_fake_memory_rejects_ascii_multibyte_symbol() {
+        let mut obj = PyUnicodeObject::default();
+        obj._base._base.length = 6;
+        obj._base._base.state.set_kind(2);
+        obj._base._base.state.set_ascii(1);
+        obj._base._base.state.set_compact(1);
+        let utf16: Vec<u8> = "symbol".encode_utf16().flat_map(u16::to_ne_bytes).collect();
+        let memory = FakeStringMemory {
+            header: &obj,
+            payload_address: &obj as *const _ as usize + std::mem::size_of::<PyASCIIObject>(),
+            payload: &utf16,
+            payload_reads: Cell::new(0),
+        };
+
+        // Without the layout check, these bytes decode to a plausible "symbol".
+        assert_eq!(
+            copy_string(&obj, &memory, &PyTypes { code: 0, string: 0 })
+                .unwrap_err()
+                .to_string(),
+            "ASCII string has non-one-byte kind 2"
+        );
+        assert_eq!(memory.payload_reads.get(), 0);
+    }
+
+    #[test]
+    fn test_fake_memory_rejects_invalid_empty_header() {
+        let obj = PyUnicodeObject::default(); // length and kind are both zero
+        let memory = FakeStringMemory {
+            header: &obj,
+            payload_address: 0,
+            payload: b"symbol",
+            payload_reads: Cell::new(0),
+        };
+
+        assert_eq!(
+            copy_string(&obj, &memory, &PyTypes { code: 0, string: 0 })
+                .unwrap_err()
+                .to_string(),
+            "Unknown string kind 0"
+        );
+        assert_eq!(memory.payload_reads.get(), 0);
+    }
+
+    #[test]
+    fn test_compact_string_rejects_address_overflow() {
+        let obj = to_asciiobject("test");
+        let unicode: &PyUnicodeObject = unsafe { std::mem::transmute(&obj.base) };
+        assert_eq!(
+            unicode.address(usize::MAX).unwrap_err().to_string(),
+            "String address overflow"
+        );
+    }
+
+    #[test]
+    fn test_non_ascii_compact_string_rejects_address_overflow() {
+        let mut obj = PyUnicodeObject::default();
+        obj._base._base.state.set_compact(1);
+        obj._base._base.state.set_kind(2);
+        assert_eq!(
+            obj.address(usize::MAX).unwrap_err().to_string(),
+            "String address overflow"
+        );
+    }
+
+    #[test]
+    fn test_py2_string_rejects_address_overflow() {
+        let obj = v2_7_15::PyStringObject::default();
+        assert_eq!(
+            StringObject::address(&obj, usize::MAX)
+                .unwrap_err()
+                .to_string(),
+            "String address overflow"
+        );
+    }
+
+    #[test]
+    fn test_bytes_reject_address_overflow() {
+        let obj = to_byteobject(b"test");
+        assert_eq!(
+            obj.base.address(usize::MAX).unwrap_err().to_string(),
+            "Byte address overflow"
+        );
+    }
+
+    #[test]
+    fn test_copy_bytes_rejects_negative_length() {
+        let mut obj = to_byteobject(b"test");
+        obj.base.ob_base.ob_size = -1;
+        assert_eq!(
+            copy_bytes(&obj.base, &LocalProcess)
+                .unwrap_err()
+                .to_string(),
+            "Negative byte length"
+        );
     }
 
     #[test]
