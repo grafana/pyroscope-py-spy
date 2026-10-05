@@ -46,6 +46,9 @@ pub fn copy_string<T: StringObject, P: ProcessMemory>(
     // Length is below 4096 and kind is at most 4, so this cannot overflow.
     let byte_length = length * kind as usize;
     let address = obj.address(ptr as usize)?;
+    address
+        .checked_add(byte_length)
+        .ok_or_else(|| format_err!("String range overflow"))?;
     let bytes = process.copy(address, byte_length)?;
 
     match (kind, ascii) {
@@ -832,6 +835,27 @@ pub mod tests {
                 .unwrap_err()
                 .to_string(),
             "ASCII string has non-one-byte kind 2"
+        );
+        assert_eq!(memory.payload_reads.get(), 0);
+    }
+
+    #[test]
+    fn test_fake_memory_rejects_wrapping_string_range() {
+        let mut obj = PyUnicodeObject::default();
+        obj._base._base.length = 6;
+        obj._base._base.state.set_kind(1);
+        obj.data.any = (usize::MAX - 1) as *mut _;
+        let memory = FakeStringMemory {
+            header: &obj,
+            payload_address: usize::MAX - 1,
+            payload: b"symbol",
+            payload_reads: Cell::new(0),
+        };
+        assert_eq!(
+            copy_string(&obj, &memory, &PyTypes { code: 0, string: 0 })
+                .unwrap_err()
+                .to_string(),
+            "String range overflow"
         );
         assert_eq!(memory.payload_reads.get(), 0);
     }
