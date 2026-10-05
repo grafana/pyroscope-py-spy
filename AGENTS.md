@@ -86,6 +86,10 @@ only; its entry frame is the only `FRAME_OWNED_BY_CSTACK` frame.
   `is_python_frame()` before `lasti()` runs, so it only ever sees a plain pointer. Revisit
   if CPython starts tagging code stackrefs.
 
+## Object type validation
+
+`get_stack_trace` rejects any code object whose `ob_type` is not exactly `PyCode_Type`, and `copy_string` rejects any string that is not exactly `PyUnicode_Type` (addresses in `PyTypes`). Str subclasses are deliberately unsupported: a frame whose `co_filename`, `co_name` or `co_qualname` is a str subclass is dropped, and a str-subclass key or `_name` met during the thread-name lookup fails the whole lookup. Do not loosen the check to `tp_flags` or a `tp_base` walk to handle them.
+
 ## Changing the public API
 
 Anything in "How pyroscope-python uses it" is a contract. Changing it needs a matching

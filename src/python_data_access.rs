@@ -5,16 +5,25 @@ use crate::python_bindings::v3_13_0;
 use crate::python_interpreters::{
     BytesObject, InterpreterState, ListObject, Object, StringObject, TupleObject, TypeObject,
 };
+use crate::python_process_info::PyTypes;
 use crate::utils::offset_of;
 use crate::version::Version;
 use remoteprocess::ProcessMemory;
 
-/// Copies a string from a target process. Attempts to handle unicode differences, which mostly seems to be working
+/// Copies a string from a target process, rejecting any object that is not exactly
+/// `PyUnicode_Type`. Attempts to handle unicode differences, which mostly seems to be working
 pub fn copy_string<T: StringObject, P: ProcessMemory>(
     ptr: *const T,
     process: &P,
+    types: &PyTypes,
 ) -> Result<String, Error> {
     let obj = process.copy_pointer(ptr)?;
+    if obj.ob_type() != types.string {
+        return Err(format_err!(
+            "Object at 0x{:x} is not a string",
+            ptr as usize
+        ));
+    }
     if obj.size() == 0 {
         return Ok(String::new());
     }
@@ -371,6 +380,7 @@ pub fn format_variable<I, P>(
     version: &Version,
     addr: usize,
     max_length: isize,
+    types: &PyTypes,
 ) -> Result<String, Error>
 where
     I: InterpreterState,
@@ -421,7 +431,7 @@ where
     } else if flags & PY_TPFLAGS_STRING_SUBCLASS != 0
         || (version.major == 2 && (flags & PY_TPFLAGS_BYTES_SUBCLASS != 0))
     {
-        let value = copy_string(addr as *const I::StringObject, process)?
+        let value = copy_string(addr as *const I::StringObject, process, types)?
             .replace('\'', "\\\"")
             .replace('\n', "\\n");
         if let Some((offset, _)) = value.char_indices().nth((max_length - 5) as usize) {
@@ -435,8 +445,8 @@ where
             let mut remaining = max_length - 2;
             for entry in DictIterator::from(process, version, addr)? {
                 let (key, value) = entry?;
-                let key = format_variable::<I, P>(process, version, key, remaining)?;
-                let value = format_variable::<I, P>(process, version, value, remaining)?;
+                let key = format_variable::<I, P>(process, version, key, remaining, types)?;
+                let value = format_variable::<I, P>(process, version, value, remaining, types)?;
                 remaining -= (key.len() + value.len()) as isize + 4;
                 if remaining <= 5 {
                     values.push("...".to_owned());
@@ -457,7 +467,8 @@ where
         for i in 0..object.size() {
             let valueptr: *mut I::Object =
                 process.copy_struct(addr + i * std::mem::size_of::<*mut I::Object>())?;
-            let value = format_variable::<I, P>(process, version, valueptr as usize, remaining)?;
+            let value =
+                format_variable::<I, P>(process, version, valueptr as usize, remaining, types)?;
             remaining -= value.len() as isize + 2;
             if remaining <= 5 {
                 values.push("...".to_owned());
@@ -472,7 +483,8 @@ where
         let mut remaining = max_length - 2;
         for i in 0..object.size() {
             let value_addr: *mut I::Object = process.copy_struct(object.address(addr, i))?;
-            let value = format_variable::<I, P>(process, version, value_addr as usize, remaining)?;
+            let value =
+                format_variable::<I, P>(process, version, value_addr as usize, remaining, types)?;
             remaining -= value.len() as isize + 2;
             if remaining <= 5 {
                 values.push("...".to_owned());
@@ -633,11 +645,47 @@ pub mod tests {
     #[test]
     fn test_copy_string() {
         let original = "function_name";
-        let obj = to_asciiobject(original);
+        let mut obj = to_asciiobject(original);
+        obj.base.ob_base.ob_type = 0x2000 as *mut crate::python_bindings::v3_7_0::_typeobject;
 
         let unicode: &PyUnicodeObject = unsafe { std::mem::transmute(&obj.base) };
-        let copied = copy_string(unicode, &LocalProcess).unwrap();
+        let types = PyTypes {
+            code: 0,
+            string: 0x2000,
+        };
+        let copied = copy_string(unicode, &LocalProcess, &types).unwrap();
         assert_eq!(copied, original);
+    }
+
+    #[test]
+    fn test_copy_string_validates_type() {
+        const STRING_TYPE: usize = 0x2000;
+
+        let mut obj = to_asciiobject("function_name");
+        obj.base.ob_base.ob_type = STRING_TYPE as *mut crate::python_bindings::v3_7_0::_typeobject;
+
+        let unicode: &PyUnicodeObject = unsafe { std::mem::transmute(&obj.base) };
+        assert_eq!(
+            copy_string(
+                unicode,
+                &LocalProcess,
+                &PyTypes {
+                    code: 0,
+                    string: STRING_TYPE
+                }
+            )
+            .unwrap(),
+            "function_name"
+        );
+        assert!(copy_string(
+            unicode,
+            &LocalProcess,
+            &PyTypes {
+                code: 0,
+                string: STRING_TYPE + 0x20
+            }
+        )
+        .is_err());
     }
 
     #[test]

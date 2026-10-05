@@ -19,7 +19,7 @@ use crate::python_data_access::format_variable;
 use crate::python_interpreters::{InterpreterState, ThreadState};
 use crate::python_process_info::{
     get_interpreter_address_with_debug_offsets, get_python_version, get_threadstate_address,
-    PythonDebugOffsets, PythonProcessInfo,
+    PyTypes, PythonDebugOffsets, PythonProcessInfo,
 };
 use crate::python_threading::thread_name_lookup;
 use crate::stack_trace::{get_gil_threadid, get_stack_trace, StackTrace};
@@ -32,6 +32,7 @@ pub struct PythonSpy {
     pub version: Version,
     pub interpreter_address: usize,
     pub threadstate_address: usize,
+    pub(crate) types: PyTypes,
     pub config: Config,
     #[cfg(feature = "unwind")]
     pub native: Option<NativeStack>,
@@ -61,8 +62,10 @@ impl PythonSpy {
         let version = get_python_version(&python_info, &process)?;
         info!("python version {} detected", version);
 
+        let types = PyTypes::resolve(&python_info, &process, &version)?;
+
         let (interpreter_address, debug_offsets) =
-            get_interpreter_address_with_debug_offsets(&python_info, &process, &version)?;
+            get_interpreter_address_with_debug_offsets(&python_info, &process, &version, &types)?;
         info!("Found interpreter at 0x{:016x}", interpreter_address);
 
         // lets us figure out which thread has the GIL
@@ -91,6 +94,7 @@ impl PythonSpy {
             version,
             interpreter_address,
             threadstate_address,
+            types,
             #[cfg(feature = "unwind")]
             native,
             #[cfg(target_os = "linux")]
@@ -255,6 +259,7 @@ impl PythonSpy {
                 &self.process,
                 self.config.dump_locals > 0,
                 self.config.lineno,
+                &self.types,
             )
             .with_context(|| {
                 format!(
@@ -336,6 +341,7 @@ impl PythonSpy {
                             &self.version,
                             local.addr,
                             max_length,
+                            &self.types,
                         );
                         local.repr = Some(repr.unwrap_or_else(|_| "?".to_owned()));
                     }

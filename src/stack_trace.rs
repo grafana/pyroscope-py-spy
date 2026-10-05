@@ -10,6 +10,7 @@ use crate::python_data_access::{copy_bytes, copy_string};
 use crate::python_interpreters::{
     CodeObject, FrameObject, InterpreterState, ThreadState, TupleObject,
 };
+use crate::python_process_info::PyTypes;
 
 /// Call stack for a single python thread
 #[derive(Debug, Clone, Serialize)]
@@ -74,6 +75,7 @@ pub fn get_stack_traces<I, P>(
     process: &P,
     threadstate_address: usize,
     config: Option<&Config>,
+    types: &PyTypes,
 ) -> Result<Vec<StackTrace>, Error>
 where
     I: InterpreterState,
@@ -96,7 +98,7 @@ where
             .copy_pointer(threads)
             .context("Failed to copy PyThreadState")?;
 
-        let mut trace = get_stack_trace(&thread, process, dump_locals > 0, lineno)?;
+        let mut trace = get_stack_trace(&thread, process, dump_locals > 0, lineno, types)?;
         trace.owns_gil = trace.thread_id == gil_thread_id;
 
         ret.push(trace);
@@ -115,6 +117,7 @@ pub fn get_stack_trace<T, P>(
     process: &P,
     copy_locals: bool,
     lineno: LineNo,
+    types: &PyTypes,
 ) -> Result<StackTrace, Error>
 where
     T: ThreadState,
@@ -155,14 +158,21 @@ where
             .copy_pointer(frame.code())
             .context("Failed to copy PyCodeObject")?;
 
-        let filename = copy_string(code.filename(), process).context("Failed to copy filename");
+        // f_code can be torn or already freed when sampling without pausing the process.
+        if code.ob_type() != types.code {
+            frame_ptr = frame.back();
+            set_last_frame_as_shim_entry(&mut frames);
+            continue;
+        }
+
+        let filename =
+            copy_string(code.filename(), process, types).context("Failed to copy filename");
 
         // Try to get qualname first (available in Python 3.11+), fall back to name
         let name = match code.qualname() {
-            Some(qualname_ptr) => {
-                copy_string(qualname_ptr, process).or_else(|_| copy_string(code.name(), process))
-            }
-            None => copy_string(code.name(), process),
+            Some(qualname_ptr) => copy_string(qualname_ptr, process, types)
+                .or_else(|_| copy_string(code.name(), process, types)),
+            None => copy_string(code.name(), process, types),
         }
         .context("Failed to copy function name");
 
@@ -204,7 +214,7 @@ where
 
         let locals = if copy_locals {
             Some(
-                get_locals(&code, frame_ptr, &frame, process)
+                get_locals(&code, frame_ptr, &frame, process, types)
                     .context("Failed to get local variables")?,
             )
         } else {
@@ -284,6 +294,7 @@ fn get_locals<C: CodeObject, F: FrameObject, P: ProcessMemory>(
     frameptr: *const F,
     frame: &F,
     process: &P,
+    types: &PyTypes,
 ) -> Result<Vec<LocalVariable>, Error> {
     let local_count = code.nlocals() as usize;
     let argcount = code.argcount() as usize;
@@ -300,7 +311,8 @@ fn get_locals<C: CodeObject, F: FrameObject, P: ProcessMemory>(
         let nameptr: *const C::StringObject =
             process.copy_struct(varnames.address(code.varnames() as usize, i))?;
 
-        let name = copy_string(nameptr, process).context("Failed to copy local variable name")?;
+        let name =
+            copy_string(nameptr, process, types).context("Failed to copy local variable name")?;
         let addr: usize = process.copy_struct(locals_addr + i * ptr_size)?;
 
         // hack: handle things like None, True, False, small integer constants etc on Python 3.14
@@ -371,9 +383,93 @@ impl ProcessInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::python_bindings::v3_7_0::PyCodeObject;
-    use crate::python_data_access::tests::to_byteobject;
+    use crate::python_bindings::v3_7_0::{self, PyCodeObject};
+    use crate::python_data_access::tests::{to_asciiobject, to_byteobject};
     use remoteprocess::LocalProcess;
+
+    const CODE_TYPE: usize = 0x1000;
+    const STRING_TYPE: usize = 0x2000;
+
+    fn with_single_frame_thread(f: impl FnOnce(&v3_7_0::PyThreadState)) {
+        let mut filename = to_asciiobject("test.py");
+        let mut name = to_asciiobject("foo");
+        filename.base.ob_base.ob_type = STRING_TYPE as *mut v3_7_0::_typeobject;
+        name.base.ob_base.ob_type = STRING_TYPE as *mut v3_7_0::_typeobject;
+        let mut code = PyCodeObject {
+            ob_base: v3_7_0::PyObject {
+                ob_type: CODE_TYPE as *mut v3_7_0::_typeobject,
+                ..Default::default()
+            },
+            co_filename: &mut filename.base as *mut _ as *mut v3_7_0::PyObject,
+            co_name: &mut name.base as *mut _ as *mut v3_7_0::PyObject,
+            ..Default::default()
+        };
+        let mut frame = v3_7_0::PyFrameObject {
+            f_code: &mut code,
+            ..Default::default()
+        };
+        let thread = v3_7_0::PyThreadState {
+            frame: &mut frame,
+            ..Default::default()
+        };
+        f(&thread);
+    }
+
+    fn frames_for(thread: &v3_7_0::PyThreadState, types: &PyTypes) -> Vec<Frame> {
+        get_stack_trace(thread, &LocalProcess, false, LineNo::NoLine, types)
+            .unwrap()
+            .frames
+    }
+
+    #[test]
+    fn test_code_object_type_is_validated() {
+        with_single_frame_thread(|thread| {
+            let matching = frames_for(
+                thread,
+                &PyTypes {
+                    code: CODE_TYPE,
+                    string: STRING_TYPE,
+                },
+            );
+            assert_eq!(matching.len(), 1);
+            assert_eq!(matching[0].name, "foo");
+            assert_eq!(matching[0].filename, "test.py");
+
+            let mismatched = frames_for(
+                thread,
+                &PyTypes {
+                    code: CODE_TYPE + 0x20,
+                    string: STRING_TYPE,
+                },
+            );
+            assert!(mismatched.is_empty());
+        });
+    }
+
+    #[test]
+    fn test_string_type_is_validated() {
+        with_single_frame_thread(|thread| {
+            let matching = frames_for(
+                thread,
+                &PyTypes {
+                    code: CODE_TYPE,
+                    string: STRING_TYPE,
+                },
+            );
+            assert_eq!(matching.len(), 1);
+            assert_eq!(matching[0].name, "foo");
+            assert_eq!(matching[0].filename, "test.py");
+
+            let mismatched = frames_for(
+                thread,
+                &PyTypes {
+                    code: CODE_TYPE,
+                    string: STRING_TYPE + 0x20,
+                },
+            );
+            assert!(mismatched.is_empty());
+        });
+    }
 
     #[test]
     fn test_get_line_number() {
