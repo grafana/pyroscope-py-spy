@@ -6,6 +6,7 @@ use crate::python_interpreters::{
     BytesObject, InterpreterState, ListObject, Object, StringObject, TupleObject, TypeObject,
 };
 use crate::python_process_info::PyTypes;
+use crate::stack_trace::copy_pointer;
 use crate::utils::offset_of;
 use crate::version::Version;
 use remoteprocess::ProcessMemory;
@@ -17,7 +18,7 @@ pub fn copy_string<T: StringObject, P: ProcessMemory>(
     process: &P,
     types: &PyTypes,
 ) -> Result<String, Error> {
-    let obj = process.copy_pointer(ptr)?;
+    let obj = copy_pointer(process, ptr)?;
     if obj.ob_type() != types.string {
         return Err(format_err!(
             "Object at 0x{:x} is not a string",
@@ -77,7 +78,7 @@ pub fn copy_bytes<T: BytesObject, P: ProcessMemory>(
     ptr: *const T,
     process: &P,
 ) -> Result<Vec<u8>, Error> {
-    let obj = process.copy_pointer(ptr)?;
+    let obj = copy_pointer(process, ptr)?;
     let size = obj.size();
     if size >= 65536 {
         return Err(format_err!("Refusing to copy {} bytes", size));

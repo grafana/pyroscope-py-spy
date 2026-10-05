@@ -494,8 +494,7 @@ impl FrameObject for v3_14_0::_PyInterpreterFrame {
         }
     }
     fn lasti(&self) -> i32 {
-        let co_code = unsafe { self.f_executable.bits as *const u8 };
-        unsafe { (self.instr_ptr as *const u8).offset_from(co_code) as i32 }
+        (self.instr_ptr as usize).wrapping_sub(unsafe { self.f_executable.bits }) as i32
     }
     fn back(&self) -> *mut Self {
         self.previous
@@ -584,8 +583,7 @@ impl FrameObject for v3_13_0::_PyInterpreterFrame {
         self.f_executable as *mut v3_13_0::PyCodeObject
     }
     fn lasti(&self) -> i32 {
-        let co_code = self.f_executable as *const _ as *const u8;
-        unsafe { (self.instr_ptr as *const u8).offset_from(co_code) as i32 }
+        (self.instr_ptr as usize).wrapping_sub(self.f_executable as usize) as i32
     }
     fn back(&self) -> *mut Self {
         self.previous
@@ -679,8 +677,7 @@ impl FrameObject for v3_12_0::_PyInterpreterFrame {
         // this returns the delta from the co_code, but we need to adjust for the
         // offset from co_code.co_code_adaptive. This is slightly easier to do in the
         // get_line_number code, so will adjust there
-        let co_code = self.f_code as *const _ as *const u8;
-        unsafe { (self.prev_instr as *const u8).offset_from(co_code) as i32 }
+        (self.prev_instr as usize).wrapping_sub(self.f_code as usize) as i32
     }
     fn back(&self) -> *mut Self {
         self.previous
@@ -772,8 +769,7 @@ impl FrameObject for v3_11_0::_PyInterpreterFrame {
         // this returns the delta from the co_code, but we need to adjust for the
         // offset from co_code.co_code_adaptive. This is slightly easier to do in the
         // get_line_number code, so will adjust there
-        let co_code = self.f_code as *const _ as *const u8;
-        unsafe { (self.prev_instr as *const u8).offset_from(co_code) as i32 }
+        (self.prev_instr as usize).wrapping_sub(self.f_code as usize) as i32
     }
     fn back(&self) -> *mut Self {
         self.previous
