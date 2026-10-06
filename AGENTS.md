@@ -32,7 +32,7 @@ See `rust/src/lib.rs` and `rust/src/pyspy_backend.rs` in pyroscope-python.
   - `subprocesses: false`
   - `include_thread_ids: true`
   - `duration: RecordDuration::Unlimited`
-  - `sampling_rate`, `gil_only`, `lineno`, `include_idle` set from user options
+  - `sampling_rate`, `gil_only`, `lineno`, `include_idle`, `collect_thread_names` set from user options
   - everything else is `Config::default()`
 - `StackTrace` fields read: `pid`, `thread_id`, `thread_name`, `active`, `owns_gil`, `frames`.
 - `Frame` fields read: `name`, `filename`, `module`, `line`. Downstream tests construct
