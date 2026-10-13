@@ -1,3 +1,5 @@
+use std::mem::MaybeUninit;
+use std::ops::Range;
 use std::sync::Arc;
 
 use anyhow::{Context, Error, Result};
@@ -10,6 +12,7 @@ use crate::python_data_access::{copy_bytes, copy_string};
 use crate::python_interpreters::{
     CodeObject, FrameObject, InterpreterState, ThreadState, TupleObject,
 };
+use crate::python_process_info::PyTypes;
 
 /// Call stack for a single python thread
 #[derive(Debug, Clone, Serialize)]
@@ -74,6 +77,7 @@ pub fn get_stack_traces<I, P>(
     process: &P,
     threadstate_address: usize,
     config: Option<&Config>,
+    types: &PyTypes,
 ) -> Result<Vec<StackTrace>, Error>
 where
     I: InterpreterState,
@@ -96,7 +100,7 @@ where
             .copy_pointer(threads)
             .context("Failed to copy PyThreadState")?;
 
-        let mut trace = get_stack_trace(&thread, process, dump_locals > 0, lineno)?;
+        let mut trace = get_stack_trace(&thread, process, dump_locals > 0, lineno, types)?;
         trace.owns_gil = trace.thread_id == gil_thread_id;
 
         ret.push(trace);
@@ -109,67 +113,165 @@ where
     Ok(ret)
 }
 
+const MAX_FRAMES: usize = 4096;
+
+pub(crate) struct RawFrame {
+    frame: usize,
+    code: usize,
+    lasti: i32,
+    is_entry: bool,
+}
+
+pub(crate) struct RawThread {
+    pub thread_id: u64,
+    pub os_thread_id: Option<u64>,
+    pub owns_gil: bool,
+    pub frames: Range<usize>,
+}
+
+#[derive(Default)]
+pub(crate) struct UnwindBuffers {
+    pub frames: Vec<RawFrame>,
+    pub threads: Vec<RawThread>,
+}
+
+struct AssertNoNiche<T>(std::marker::PhantomData<T>);
+
+impl<T> AssertNoNiche<T> {
+    const ASSERT: () = assert!(
+        std::mem::size_of::<Option<T>>() > std::mem::size_of::<T>(),
+        "this type has a niche: not every bit pattern is a valid value, so it \
+         must not be copied out of another process"
+    );
+}
+
+/// Like `ProcessMemory::copy_struct`, but reads onto the stack instead of a heap buffer
+// TODO: make remoteprocess copy_struct non-allocating and drop this
+pub(crate) fn read_struct<T: Copy, P: ProcessMemory>(process: &P, addr: usize) -> Result<T, Error> {
+    let () = AssertNoNiche::<T>::ASSERT;
+    let mut value = MaybeUninit::<T>::uninit();
+    let buf = unsafe {
+        let ptr = value.as_mut_ptr().cast::<u8>();
+        let len = std::mem::size_of::<T>();
+        ptr.write_bytes(0, len);
+        std::slice::from_raw_parts_mut(ptr, len)
+    };
+    process.read(addr, buf)?;
+    Ok(unsafe { value.assume_init() })
+}
+
+pub(crate) fn copy_pointer<T: Copy, P: ProcessMemory>(
+    process: &P,
+    ptr: *const T,
+) -> Result<T, Error> {
+    read_struct(process, ptr as usize)
+}
+
 /// Gets a stack trace for an individual thread
 pub fn get_stack_trace<T, P>(
     thread: &T,
     process: &P,
     copy_locals: bool,
     lineno: LineNo,
+    types: &PyTypes,
 ) -> Result<StackTrace, Error>
 where
     T: ThreadState,
     P: ProcessMemory,
 {
-    // TODO: just return frames here? everything else probably should be returned out of scope
-    let mut frames = Vec::new();
+    let mut raw = Vec::new();
+    unwind_frames(thread, process, &mut raw)?;
+    let frames = resolve_frames::<T::FrameObject, P>(&raw, process, copy_locals, lineno, types)?;
 
+    Ok(StackTrace {
+        pid: 0,
+        frames,
+        thread_id: thread.thread_id(),
+        thread_name: None,
+        owns_gil: false,
+        active: true,
+        os_thread_id: thread.native_thread_id(),
+        process_info: None,
+    })
+}
+
+pub(crate) fn unwind_frames<T, P>(
+    thread: &T,
+    process: &P,
+    out: &mut Vec<RawFrame>,
+) -> Result<(), Error>
+where
+    T: ThreadState,
+    P: ProcessMemory,
+{
     // python 3.11+ has an extra level of indirection to get the Frame from the threadstate
     let mut frame_address = thread.frame_address();
     if let Some(addr) = frame_address {
-        frame_address = Some(process.copy_struct(addr)?);
+        frame_address = Some(read_struct(process, addr)?);
     }
 
     let mut frame_ptr = thread.frame(frame_address);
+    let start = out.len();
+    let mut walked = 0;
 
-    // We are iterating in reverse, i.e. from last call to first call.
-    // Since Python 3.12, there are shim frames inserted before a block
-    // of Python frames. When we encounter one, update the last frame.
-    let set_last_frame_as_shim_entry = &mut |frames: &mut Vec<Frame>| {
-        if let Some(frame) = frames.last_mut() {
-            frame.is_shim_entry = true;
-        }
-    };
-
+    // There is at most one non-Python frame per Python frame, so walking more than
+    // twice the limit means a cycle.
     while !frame_ptr.is_null() {
-        let frame = process
-            .copy_pointer(frame_ptr)
-            .context("Failed to copy PyFrameObject")?;
+        let frame = copy_pointer(process, frame_ptr).context("Failed to copy PyFrameObject")?;
+        walked += 1;
 
-        if !frame.is_python_frame() {
-            frame_ptr = frame.back();
-            set_last_frame_as_shim_entry(&mut frames);
+        if frame.is_python_frame() {
+            out.push(RawFrame {
+                frame: frame_ptr as usize,
+                code: frame.code() as usize,
+                lasti: frame.lasti(),
+                is_entry: frame.is_entry(),
+            });
+        }
+        if walked > 2 * MAX_FRAMES || out.len() - start > MAX_FRAMES {
+            return Err(format_err!("Max frame recursion depth reached"));
+        }
+
+        frame_ptr = frame.back();
+    }
+    Ok(())
+}
+
+pub(crate) fn resolve_frames<F, P>(
+    raw: &[RawFrame],
+    process: &P,
+    copy_locals: bool,
+    lineno: LineNo,
+    types: &PyTypes,
+) -> Result<Vec<Frame>, Error>
+where
+    F: FrameObject,
+    P: ProcessMemory,
+{
+    let mut frames = Vec::with_capacity(raw.len());
+
+    for raw in raw {
+        let code = copy_pointer(process, raw.code as *const F::CodeObject)
+            .context("Failed to copy PyCodeObject")?;
+
+        // f_code can be torn or already freed when sampling without pausing the process.
+        if code.ob_type() != types.code {
             continue;
         }
 
-        let code = process
-            .copy_pointer(frame.code())
-            .context("Failed to copy PyCodeObject")?;
-
-        let filename = copy_string(code.filename(), process).context("Failed to copy filename");
+        let filename =
+            copy_string(code.filename(), process, types).context("Failed to copy filename");
 
         // Try to get qualname first (available in Python 3.11+), fall back to name
         let name = match code.qualname() {
-            Some(qualname_ptr) => {
-                copy_string(qualname_ptr, process).or_else(|_| copy_string(code.name(), process))
-            }
-            None => copy_string(code.name(), process),
+            Some(qualname_ptr) => copy_string(qualname_ptr, process, types)
+                .or_else(|_| copy_string(code.name(), process, types)),
+            None => copy_string(code.name(), process, types),
         }
         .context("Failed to copy function name");
 
         // Guards against torn reads while sampling without pausing the process.
         if filename.is_err() || name.is_err() {
-            frame_ptr = frame.back();
-            set_last_frame_as_shim_entry(&mut frames);
             continue;
         }
         let filename = filename?;
@@ -178,15 +280,13 @@ where
         // skip <shim> entries in python 3.13+
         // Unset file/function name in py3.13 means this is a shim.
         if filename.is_empty() || filename == "<shim>" {
-            frame_ptr = frame.back();
-            set_last_frame_as_shim_entry(&mut frames);
             continue;
         }
 
         let line = match lineno {
             LineNo::NoLine => 0,
             LineNo::First => code.first_lineno(),
-            LineNo::LastInstruction => match get_line_number(&code, frame.lasti(), process) {
+            LineNo::LastInstruction => match get_line_number(&code, raw.lasti, process) {
                 Ok(line) => line,
                 Err(e) => {
                     // Failling to get the line number really shouldn't be fatal here, but
@@ -204,14 +304,12 @@ where
 
         let locals = if copy_locals {
             Some(
-                get_locals(&code, frame_ptr, &frame, process)
+                get_locals(&code, raw.frame as *const F, process, types)
                     .context("Failed to get local variables")?,
             )
         } else {
             None
         };
-
-        let is_entry = frame.is_entry();
 
         frames.push(Frame {
             name,
@@ -220,29 +318,12 @@ where
             short_filename: None,
             module: None,
             locals,
-            is_entry,
+            is_entry: raw.is_entry,
             is_shim_entry: false,
         });
-        if frames.len() > 4096 {
-            return Err(format_err!("Max frame recursion depth reached"));
-        }
-
-        frame_ptr = frame.back();
     }
 
-    // First frame is always a shim
-    set_last_frame_as_shim_entry(&mut frames);
-
-    Ok(StackTrace {
-        pid: 0,
-        frames,
-        thread_id: thread.thread_id(),
-        thread_name: None,
-        owns_gil: false,
-        active: true,
-        os_thread_id: thread.native_thread_id(),
-        process_info: None,
-    })
+    Ok(frames)
 }
 
 impl StackTrace {
@@ -282,8 +363,8 @@ fn get_line_number<C: CodeObject, P: ProcessMemory>(
 fn get_locals<C: CodeObject, F: FrameObject, P: ProcessMemory>(
     code: &C,
     frameptr: *const F,
-    frame: &F,
     process: &P,
+    types: &PyTypes,
 ) -> Result<Vec<LocalVariable>, Error> {
     let local_count = code.nlocals() as usize;
     let argcount = code.argcount() as usize;
@@ -292,7 +373,7 @@ fn get_locals<C: CodeObject, F: FrameObject, P: ProcessMemory>(
         .context("Failed to get varnames from PyCodeObject")?;
 
     let ptr_size = std::mem::size_of::<*const i32>();
-    let locals_addr = frameptr as usize + std::mem::size_of_val(frame) - ptr_size;
+    let locals_addr = frameptr as usize + std::mem::size_of::<F>() - ptr_size;
 
     let mut ret = Vec::new();
 
@@ -300,7 +381,8 @@ fn get_locals<C: CodeObject, F: FrameObject, P: ProcessMemory>(
         let nameptr: *const C::StringObject =
             process.copy_struct(varnames.address(code.varnames() as usize, i))?;
 
-        let name = copy_string(nameptr, process).context("Failed to copy local variable name")?;
+        let name =
+            copy_string(nameptr, process, types).context("Failed to copy local variable name")?;
         let addr: usize = process.copy_struct(locals_addr + i * ptr_size)?;
 
         // hack: handle things like None, True, False, small integer constants etc on Python 3.14
@@ -371,9 +453,93 @@ impl ProcessInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::python_bindings::v3_7_0::PyCodeObject;
-    use crate::python_data_access::tests::to_byteobject;
+    use crate::python_bindings::v3_7_0::{self, PyCodeObject};
+    use crate::python_data_access::tests::{to_asciiobject, to_byteobject};
     use remoteprocess::LocalProcess;
+
+    const CODE_TYPE: usize = 0x1000;
+    const STRING_TYPE: usize = 0x2000;
+
+    fn with_single_frame_thread(f: impl FnOnce(&v3_7_0::PyThreadState)) {
+        let mut filename = to_asciiobject("test.py");
+        let mut name = to_asciiobject("foo");
+        filename.base.ob_base.ob_type = STRING_TYPE as *mut v3_7_0::_typeobject;
+        name.base.ob_base.ob_type = STRING_TYPE as *mut v3_7_0::_typeobject;
+        let mut code = PyCodeObject {
+            ob_base: v3_7_0::PyObject {
+                ob_type: CODE_TYPE as *mut v3_7_0::_typeobject,
+                ..Default::default()
+            },
+            co_filename: &mut filename.base as *mut _ as *mut v3_7_0::PyObject,
+            co_name: &mut name.base as *mut _ as *mut v3_7_0::PyObject,
+            ..Default::default()
+        };
+        let mut frame = v3_7_0::PyFrameObject {
+            f_code: &mut code,
+            ..Default::default()
+        };
+        let thread = v3_7_0::PyThreadState {
+            frame: &mut frame,
+            ..Default::default()
+        };
+        f(&thread);
+    }
+
+    fn frames_for(thread: &v3_7_0::PyThreadState, types: &PyTypes) -> Vec<Frame> {
+        get_stack_trace(thread, &LocalProcess, false, LineNo::NoLine, types)
+            .unwrap()
+            .frames
+    }
+
+    #[test]
+    fn test_code_object_type_is_validated() {
+        with_single_frame_thread(|thread| {
+            let matching = frames_for(
+                thread,
+                &PyTypes {
+                    code: CODE_TYPE,
+                    string: STRING_TYPE,
+                },
+            );
+            assert_eq!(matching.len(), 1);
+            assert_eq!(matching[0].name, "foo");
+            assert_eq!(matching[0].filename, "test.py");
+
+            let mismatched = frames_for(
+                thread,
+                &PyTypes {
+                    code: CODE_TYPE + 0x20,
+                    string: STRING_TYPE,
+                },
+            );
+            assert!(mismatched.is_empty());
+        });
+    }
+
+    #[test]
+    fn test_string_type_is_validated() {
+        with_single_frame_thread(|thread| {
+            let matching = frames_for(
+                thread,
+                &PyTypes {
+                    code: CODE_TYPE,
+                    string: STRING_TYPE,
+                },
+            );
+            assert_eq!(matching.len(), 1);
+            assert_eq!(matching[0].name, "foo");
+            assert_eq!(matching[0].filename, "test.py");
+
+            let mismatched = frames_for(
+                thread,
+                &PyTypes {
+                    code: CODE_TYPE,
+                    string: STRING_TYPE + 0x20,
+                },
+            );
+            assert!(mismatched.is_empty());
+        });
+    }
 
     #[test]
     fn test_get_line_number() {
@@ -385,5 +551,17 @@ mod tests {
         };
         let lineno = get_line_number(&code, 30, &LocalProcess).unwrap();
         assert_eq!(lineno, 7);
+    }
+
+    #[test]
+    fn test_read_struct() {
+        let code = PyCodeObject {
+            co_firstlineno: 42,
+            co_argcount: 3,
+            ..Default::default()
+        };
+        let copy: PyCodeObject = read_struct(&LocalProcess, &code as *const _ as usize).unwrap();
+        assert_eq!(copy.co_firstlineno, 42);
+        assert_eq!(copy.co_argcount, 3);
     }
 }
