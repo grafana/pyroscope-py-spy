@@ -1,8 +1,9 @@
 #[cfg(not(py_spy_asan))]
-pub type SpyProcess = remoteprocess::Process;
+/// Pyroscope-specific, not meant for upstream py-spy.
+pub type PyroscopeSpyProcess = remoteprocess::Process;
 
 #[cfg(not(py_spy_asan))]
-pub fn wrap(process: remoteprocess::Process) -> SpyProcess {
+pub fn wrap(process: remoteprocess::Process) -> PyroscopeSpyProcess {
     process
 }
 
@@ -13,28 +14,25 @@ pub use imp::*;
 mod imp {
     use std::ops::Deref;
 
-    use remoteprocess::{Error, Pid, Process, ProcessMemory};
+    use remoteprocess::{Error, Process, ProcessMemory};
 
-    pub type SpyProcess = AsanProcessMemory<Process>;
+    /// Pyroscope-specific, not meant for upstream py-spy.
+    pub type PyroscopeSpyProcess = AsanProcessMemory<Process>;
 
-    pub fn wrap(process: Process) -> SpyProcess {
-        let pid = process.pid;
-        AsanProcessMemory::new(process, pid)
+    pub fn wrap(process: Process) -> PyroscopeSpyProcess {
+        AsanProcessMemory::new(process)
     }
 
     /// Reports reads of our own address space that hit memory ASAN considers
     /// poisoned, which reads through `process_vm_readv` would otherwise hide.
+    /// Pyroscope always profiles its own process, so every read is local.
     pub struct AsanProcessMemory<P> {
         inner: P,
-        local: bool,
     }
 
     impl<P> AsanProcessMemory<P> {
-        pub fn new(inner: P, pid: Pid) -> Self {
-            AsanProcessMemory {
-                inner,
-                local: pid as u32 == std::process::id(),
-            }
+        pub fn new(inner: P) -> Self {
+            AsanProcessMemory { inner }
         }
     }
 
@@ -49,9 +47,7 @@ mod imp {
     impl<P: ProcessMemory> ProcessMemory for AsanProcessMemory<P> {
         fn read(&self, addr: usize, buf: &mut [u8]) -> Result<(), Error> {
             self.inner.read(addr, buf)?;
-            if self.local {
-                report_poisoned_load(addr, buf.len());
-            }
+            report_poisoned_load(addr, buf.len());
             Ok(())
         }
     }
@@ -85,7 +81,7 @@ mod imp {
         }
 
         fn local() -> AsanProcessMemory<Process> {
-            AsanProcessMemory::new(own(), std::process::id() as Pid)
+            AsanProcessMemory::new(own())
         }
 
         fn is_child() -> bool {
@@ -194,19 +190,6 @@ mod imp {
         }
 
         #[test]
-        fn child_other_pid() {
-            if !is_child() {
-                return;
-            }
-            let addr = Box::into_raw(Box::new([7u8; 64])) as usize;
-            drop(unsafe { Box::from_raw(addr as *mut [u8; 64]) });
-            let other = AsanProcessMemory::new(own(), std::process::id() as Pid + 1);
-            let mut buf = [0u8; 64];
-            other.read(addr, &mut buf).unwrap();
-            println!("child done");
-        }
-
-        #[test]
         fn valid_read_is_not_reported() {
             if is_child() {
                 return;
@@ -236,14 +219,6 @@ mod imp {
                 return;
             }
             assert_report("child_use_after_return", "stack-use-after-return", 64);
-        }
-
-        #[test]
-        fn other_pid_is_not_reported() {
-            if is_child() {
-                return;
-            }
-            assert_no_report("child_other_pid");
         }
     }
 }

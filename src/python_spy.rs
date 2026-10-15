@@ -8,7 +8,7 @@ use std::path::Path;
 use anyhow::{Context, Error, Result};
 use remoteprocess::{Pid, Process, ProcessMemory, Tid};
 
-use crate::asan::{self, SpyProcess};
+use crate::asan::{self, PyroscopeSpyProcess};
 use crate::config::{Config, LockingStrategy};
 #[cfg(feature = "unwind")]
 use crate::native_stack_trace::NativeStack;
@@ -32,7 +32,7 @@ use crate::version::Version;
 /// Lets you retrieve stack traces of a running python program
 pub struct PythonSpy {
     pub pid: Pid,
-    pub process: SpyProcess,
+    pub process: PyroscopeSpyProcess,
     pub version: Version,
     pub interpreter_address: usize,
     pub threadstate_address: usize,
@@ -249,7 +249,7 @@ impl PythonSpy {
 
         // get the threadid of the gil if appropriate
         let gil_thread_id =
-            get_gil_threadid::<I, SpyProcess>(self.threadstate_address, &self.process)
+            get_gil_threadid::<I, PyroscopeSpyProcess>(self.threadstate_address, &self.process)
                 .context("failed to get gil_thread_id")?;
 
         bufs.frames.clear();
