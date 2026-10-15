@@ -1,4 +1,5 @@
 extern crate py_spy;
+use py_spy::config::LockingStrategy;
 use py_spy::{Config, Pid, PythonSpy};
 use std::collections::HashSet;
 
@@ -129,6 +130,29 @@ fn test_long_sleep() {
     // linux+freebsd is trickier
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     assert!(!traces[0].active);
+}
+
+#[test]
+fn test_long_sleep_excluded_without_idle() {
+    #[cfg(target_os = "macos")]
+    {
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+    }
+
+    let config = Config {
+        include_idle: false,
+        blocking: LockingStrategy::NonBlocking,
+        ..Default::default()
+    };
+    let mut runner = TestRunner::new(config, "./tests/scripts/longsleep.py");
+    let traces = runner.spy.get_stack_traces().unwrap();
+
+    let version = &runner.spy.version;
+    if cfg!(target_os = "macos") || (version.major, version.minor) >= (3, 11) {
+        assert!(traces.is_empty(), "{:?}", traces);
+    }
 }
 
 #[test]

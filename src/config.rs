@@ -128,7 +128,7 @@ impl Default for Config {
             native: false,
             include_thread_names: true,
             gil_only: false,
-            include_idle: false,
+            include_idle: true,
             include_thread_ids: false,
             hide_progress: false,
             capture_output: true,

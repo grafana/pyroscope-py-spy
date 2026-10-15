@@ -272,6 +272,14 @@ impl PythonSpy {
                 continue;
             }
 
+            if !self.config.include_idle {
+                if let Some(tid) = thread.native_thread_id() {
+                    if thread_activity.get(&(tid as Tid)) == Some(&false) {
+                        continue;
+                    }
+                }
+            }
+
             let start = bufs.frames.len();
             unwind_frames(&thread, &self.process, &mut bufs.frames).with_context(|| {
                 format!("Failed to unwind frames for thread {}", python_thread_id)
@@ -336,10 +344,6 @@ impl PythonSpy {
                 trace.os_thread_id = os_thread_id.map(|id| id as u64);
             }
 
-            if self.config.include_thread_names {
-                trace.thread_name = self._get_python_thread_name(python_thread_id);
-            }
-
             // Figure out if the thread is sleeping from the OS if possible
             trace.active = true;
             if let Some(id) = trace.os_thread_id {
@@ -357,6 +361,14 @@ impl PythonSpy {
             // Note: this should be done before the native merging for correct results
             if trace.active {
                 trace.active = !self._heuristic_is_thread_idle(&trace);
+            }
+
+            if !self.config.include_idle && !trace.active {
+                continue;
+            }
+
+            if self.config.include_thread_names {
+                trace.thread_name = self._get_python_thread_name(python_thread_id);
             }
 
             // Merge in the native stack frames if necessary
