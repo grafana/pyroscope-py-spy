@@ -29,6 +29,7 @@ extern crate anyhow;
 #[macro_use]
 extern crate log;
 
+pub mod asan;
 pub mod binary_parser;
 pub mod config;
 #[cfg(all(target_os = "linux", feature = "cli"))]
