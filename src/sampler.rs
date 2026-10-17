@@ -12,7 +12,7 @@ use remoteprocess::Pid;
 
 use crate::config::Config;
 use crate::python_spy::PythonSpy;
-use crate::stack_trace::{ProcessInfo, StackTrace, UnwindBuffers};
+use crate::stack_trace::{ProcessInfo, StackTrace};
 use crate::timer::Timer;
 use crate::version::Version;
 
@@ -61,10 +61,9 @@ impl Sampler {
                 }
             };
 
-            let mut bufs = UnwindBuffers::default();
             for sleep in Timer::new(spy.config.sampling_rate as f64) {
                 let mut sampling_errors = None;
-                let traces = match spy.get_stack_traces_with(&mut bufs) {
+                let traces = match spy.get_stack_traces() {
                     Ok(traces) => traces,
                     Err(e) => {
                         if spy.process.exe().is_err() {
@@ -314,9 +313,8 @@ impl PythonSpyThread {
                 }
             };
 
-            let mut bufs = UnwindBuffers::default();
             for _ in notify_rx.iter() {
-                let result = spy.get_stack_traces_with(&mut bufs);
+                let result = spy.get_stack_traces();
                 if result.is_err() && spy.process.exe().is_err() {
                     info!(
                         "stopped sampling pid {} because the process exited",
