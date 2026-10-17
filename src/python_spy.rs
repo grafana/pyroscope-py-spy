@@ -404,19 +404,12 @@ impl PythonSpy {
             // code.
             false
         } else {
-            let frame = &frames[0];
-            (frame.name == "wait" && frame.filename.ends_with("threading.py"))
-                || (frame.name == "select" && frame.filename.ends_with("selectors.py"))
-                || (frame.name == "poll"
-                    && (frame.filename.ends_with("asyncore.py")
-                        || frame.filename.contains("zmq")
-                        || frame.filename.contains("gevent")
-                        || frame.filename.contains("tornado")))
+            is_idle_frame(&frames[0].name, &frames[0].filename)
         }
     }
 
     #[cfg(windows)]
-    fn _get_os_thread_id<I: InterpreterState>(
+    pub(crate) fn _get_os_thread_id<I: InterpreterState>(
         &mut self,
         python_thread_id: u64,
         _interp_head: *const I::ThreadState,
@@ -425,7 +418,7 @@ impl PythonSpy {
     }
 
     #[cfg(target_os = "macos")]
-    fn _get_os_thread_id<I: InterpreterState>(
+    pub(crate) fn _get_os_thread_id<I: InterpreterState>(
         &mut self,
         python_thread_id: u64,
         _interp_head: *const I::ThreadState,
@@ -449,7 +442,7 @@ impl PythonSpy {
     }
 
     #[cfg(all(target_os = "linux", not(feature = "unwind")))]
-    fn _get_os_thread_id<I: InterpreterState>(
+    pub(crate) fn _get_os_thread_id<I: InterpreterState>(
         &mut self,
         _python_thread_id: u64,
         _interp_head: *const I::ThreadState,
@@ -458,7 +451,7 @@ impl PythonSpy {
     }
 
     #[cfg(all(target_os = "linux", feature = "unwind"))]
-    fn _get_os_thread_id<I: InterpreterState>(
+    pub(crate) fn _get_os_thread_id<I: InterpreterState>(
         &mut self,
         python_thread_id: u64,
         interp_head: *const I::ThreadState,
@@ -573,7 +566,7 @@ impl PythonSpy {
     }
 
     #[cfg(target_os = "freebsd")]
-    fn _get_os_thread_id<I: InterpreterState>(
+    pub(crate) fn _get_os_thread_id<I: InterpreterState>(
         &mut self,
         _python_thread_id: u64,
         _interp_head: *const I::ThreadState,
@@ -640,4 +633,14 @@ impl PythonSpy {
             .insert(filename.to_owned(), shortened.clone());
         shortened
     }
+}
+
+pub(crate) fn is_idle_frame(name: &str, filename: &str) -> bool {
+    (name == "wait" && filename.ends_with("threading.py"))
+        || (name == "select" && filename.ends_with("selectors.py"))
+        || (name == "poll"
+            && (filename.ends_with("asyncore.py")
+                || filename.contains("zmq")
+                || filename.contains("gevent")
+                || filename.contains("tornado")))
 }

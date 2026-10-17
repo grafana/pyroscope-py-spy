@@ -72,7 +72,7 @@ only; its entry frame is the only `FRAME_OWNED_BY_CSTACK` frame.
 
 - 3.13+ also pushes `FRAME_OWNED_BY_THREAD` frames with a real `<shim>` code object
   (`CALL_ALLOC_AND_ENTER_INIT`). They pass `is_python_frame()` and are dropped by the
-  `<shim>` filename check in `resolve_frames`.
+  `<shim>` filename check in `resolve_frames` (and by `is_shim_filename` in the lazy `PythonSpy::sample` and `PythonSpy::walk_threads` paths, which reads only the string header).
 
 - Free-threaded (`Py_GIL_DISABLED`) builds are not supported. The bindings are generated
   from the default build, whose `_PyInterpreterFrame` layout and `Py_TAG_BITS` differ.
