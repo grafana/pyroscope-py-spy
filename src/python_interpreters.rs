@@ -16,7 +16,6 @@ use crate::python_bindings::{
     v3_9_5,
 };
 use crate::utils::offset_of;
-use anyhow::Result;
 
 pub trait InterpreterState: Copy {
     type ThreadState: ThreadState;
@@ -65,7 +64,6 @@ pub trait CodeObject: Copy {
     type BytesObject: BytesObject;
     type TupleObject: TupleObject;
 
-    fn ob_type(&self) -> usize;
     fn name(&self) -> *mut Self::StringObject;
     fn filename(&self) -> *mut Self::StringObject;
     fn line_table(&self) -> *mut Self::BytesObject;
@@ -84,16 +82,15 @@ pub trait CodeObject: Copy {
 }
 
 pub trait BytesObject: Copy {
-    fn size(&self) -> Result<usize>;
-    fn address(&self, base: usize) -> Result<usize>;
+    fn size(&self) -> usize;
+    fn address(&self, base: usize) -> usize;
 }
 
 pub trait StringObject: Copy {
-    fn ob_type(&self) -> usize;
     fn ascii(&self) -> bool;
     fn kind(&self) -> u32;
-    fn size(&self) -> Result<usize>;
-    fn address(&self, base: usize) -> Result<usize>;
+    fn size(&self) -> usize;
+    fn address(&self, base: usize) -> usize;
 }
 
 pub trait TupleObject: Copy {
@@ -203,15 +200,12 @@ macro_rules! PythonCommonImpl {
 
 // We can use this up until python3.10 - where code object lnotab attribute is deprecated
 macro_rules! PythonCodeObjectImpl {
-    ($py: ident, $bytesobject: ident, $stringobject: ident, $($obtype: tt).+) => {
+    ($py: ident, $bytesobject: ident, $stringobject: ident) => {
         impl CodeObject for $py::PyCodeObject {
             type BytesObject = $py::$bytesobject;
             type StringObject = $py::$stringobject;
             type TupleObject = $py::PyTupleObject;
 
-            fn ob_type(&self) -> usize {
-                self.$($obtype).+ as usize
-            }
             fn name(&self) -> *mut Self::StringObject {
                 self.co_name as *mut Self::StringObject
             }
@@ -303,9 +297,6 @@ macro_rules! CompactCodeObjectImpl {
             type StringObject = $py::$stringobject;
             type TupleObject = $py::PyTupleObject;
 
-            fn ob_type(&self) -> usize {
-                self.ob_base.ob_base.ob_type as usize
-            }
             fn name(&self) -> *mut Self::StringObject {
                 self.co_name as *mut Self::StringObject
             }
@@ -384,47 +375,35 @@ macro_rules! CompactCodeObjectImpl {
 macro_rules! Python3Impl {
     ($py: ident) => {
         impl BytesObject for $py::PyBytesObject {
-            fn size(&self) -> Result<usize> {
-                usize::try_from(self.ob_base.ob_size)
-                    .map_err(|_| format_err!("Negative byte length"))
+            fn size(&self) -> usize {
+                self.ob_base.ob_size as usize
             }
-            fn address(&self, base: usize) -> Result<usize> {
-                base.checked_add(offset_of(self, &self.ob_sval))
-                    .ok_or_else(|| format_err!("Byte address overflow"))
+            fn address(&self, base: usize) -> usize {
+                base + offset_of(self, &self.ob_sval)
             }
         }
 
         impl StringObject for $py::PyUnicodeObject {
-            fn ob_type(&self) -> usize {
-                self._base._base.ob_base.ob_type as usize
-            }
             fn ascii(&self) -> bool {
                 self._base._base.state.ascii() != 0
             }
-            fn size(&self) -> Result<usize> {
-                usize::try_from(self._base._base.length)
-                    .map_err(|_| format_err!("Negative string length"))
+            fn size(&self) -> usize {
+                self._base._base.length as usize
             }
             fn kind(&self) -> u32 {
                 self._base._base.state.kind()
             }
 
-            fn address(&self, base: usize) -> Result<usize> {
+            fn address(&self, base: usize) -> usize {
                 if self._base._base.state.compact() == 0 {
-                    let address = unsafe { self.data.any as usize };
-                    if self.size()? > 0 && address == 0 {
-                        return Err(format_err!("Null external string data"));
-                    }
-                    return Ok(address);
+                    return unsafe { self.data.any as usize };
                 }
 
-                let payload_offset = if self._base._base.state.ascii() == 1 {
-                    std::mem::size_of::<$py::PyASCIIObject>()
+                if self._base._base.state.ascii() == 1 {
+                    base + std::mem::size_of::<$py::PyASCIIObject>()
                 } else {
-                    std::mem::size_of::<$py::PyCompactUnicodeObject>()
-                };
-                base.checked_add(payload_offset)
-                    .ok_or_else(|| format_err!("String address overflow"))
+                    base + std::mem::size_of::<$py::PyCompactUnicodeObject>()
+                }
             }
         }
 
@@ -504,7 +483,8 @@ impl FrameObject for v3_14_0::_PyInterpreterFrame {
         }
     }
     fn lasti(&self) -> i32 {
-        (self.instr_ptr as usize).wrapping_sub(unsafe { self.f_executable.bits }) as i32
+        let co_code = unsafe { self.f_executable.bits as *const u8 };
+        unsafe { (self.instr_ptr as *const u8).offset_from(co_code) as i32 }
     }
     fn back(&self) -> *mut Self {
         self.previous
@@ -593,7 +573,8 @@ impl FrameObject for v3_13_0::_PyInterpreterFrame {
         self.f_executable as *mut v3_13_0::PyCodeObject
     }
     fn lasti(&self) -> i32 {
-        (self.instr_ptr as usize).wrapping_sub(self.f_executable as usize) as i32
+        let co_code = self.f_executable as *const _ as *const u8;
+        unsafe { (self.instr_ptr as *const u8).offset_from(co_code) as i32 }
     }
     fn back(&self) -> *mut Self {
         self.previous
@@ -687,7 +668,8 @@ impl FrameObject for v3_12_0::_PyInterpreterFrame {
         // this returns the delta from the co_code, but we need to adjust for the
         // offset from co_code.co_code_adaptive. This is slightly easier to do in the
         // get_line_number code, so will adjust there
-        (self.prev_instr as usize).wrapping_sub(self.f_code as usize) as i32
+        let co_code = self.f_code as *const _ as *const u8;
+        unsafe { (self.prev_instr as *const u8).offset_from(co_code) as i32 }
     }
     fn back(&self) -> *mut Self {
         self.previous
@@ -779,7 +761,8 @@ impl FrameObject for v3_11_0::_PyInterpreterFrame {
         // this returns the delta from the co_code, but we need to adjust for the
         // offset from co_code.co_code_adaptive. This is slightly easier to do in the
         // get_line_number code, so will adjust there
-        (self.prev_instr as usize).wrapping_sub(self.f_code as usize) as i32
+        let co_code = self.f_code as *const _ as *const u8;
+        unsafe { (self.prev_instr as *const u8).offset_from(co_code) as i32 }
     }
     fn back(&self) -> *mut Self {
         self.previous
@@ -819,9 +802,6 @@ impl CodeObject for v3_10_0::PyCodeObject {
     type StringObject = v3_10_0::PyUnicodeObject;
     type TupleObject = v3_10_0::PyTupleObject;
 
-    fn ob_type(&self) -> usize {
-        self.ob_base.ob_type as usize
-    }
     fn name(&self) -> *mut Self::StringObject {
         self.co_name as *mut Self::StringObject
     }
@@ -878,63 +858,58 @@ impl CodeObject for v3_10_0::PyCodeObject {
 
 // Python 3.9
 PythonCommonImpl!(v3_9_5, PyUnicodeObject);
-PythonCodeObjectImpl!(v3_9_5, PyBytesObject, PyUnicodeObject, ob_base.ob_type);
+PythonCodeObjectImpl!(v3_9_5, PyBytesObject, PyUnicodeObject);
 Python3Impl!(v3_9_5);
 
 // Python 3.8
 PythonCommonImpl!(v3_8_0, PyUnicodeObject);
-PythonCodeObjectImpl!(v3_8_0, PyBytesObject, PyUnicodeObject, ob_base.ob_type);
+PythonCodeObjectImpl!(v3_8_0, PyBytesObject, PyUnicodeObject);
 Python3Impl!(v3_8_0);
 
 // Python 3.7
 PythonCommonImpl!(v3_7_0, PyUnicodeObject);
-PythonCodeObjectImpl!(v3_7_0, PyBytesObject, PyUnicodeObject, ob_base.ob_type);
+PythonCodeObjectImpl!(v3_7_0, PyBytesObject, PyUnicodeObject);
 Python3Impl!(v3_7_0);
 
 // Python 3.6
 PythonCommonImpl!(v3_6_6, PyUnicodeObject);
-PythonCodeObjectImpl!(v3_6_6, PyBytesObject, PyUnicodeObject, ob_base.ob_type);
+PythonCodeObjectImpl!(v3_6_6, PyBytesObject, PyUnicodeObject);
 Python3Impl!(v3_6_6);
 
 // python 3.5 and python 3.4
 PythonCommonImpl!(v3_5_5, PyUnicodeObject);
-PythonCodeObjectImpl!(v3_5_5, PyBytesObject, PyUnicodeObject, ob_base.ob_type);
+PythonCodeObjectImpl!(v3_5_5, PyBytesObject, PyUnicodeObject);
 Python3Impl!(v3_5_5);
 
 // python 3.3
 PythonCommonImpl!(v3_3_7, PyUnicodeObject);
-PythonCodeObjectImpl!(v3_3_7, PyBytesObject, PyUnicodeObject, ob_base.ob_type);
+PythonCodeObjectImpl!(v3_3_7, PyBytesObject, PyUnicodeObject);
 Python3Impl!(v3_3_7);
 
 // Python 2.7
 PythonCommonImpl!(v2_7_15, PyStringObject);
-PythonCodeObjectImpl!(v2_7_15, PyStringObject, PyStringObject, ob_type);
+PythonCodeObjectImpl!(v2_7_15, PyStringObject, PyStringObject);
 impl BytesObject for v2_7_15::PyStringObject {
-    fn size(&self) -> Result<usize> {
-        usize::try_from(self.ob_size).map_err(|_| format_err!("Negative byte length"))
+    fn size(&self) -> usize {
+        self.ob_size as usize
     }
-    fn address(&self, base: usize) -> Result<usize> {
-        base.checked_add(offset_of(self, &self.ob_sval))
-            .ok_or_else(|| format_err!("Byte address overflow"))
+    fn address(&self, base: usize) -> usize {
+        base + offset_of(self, &self.ob_sval)
     }
 }
 
 impl StringObject for v2_7_15::PyStringObject {
-    fn ob_type(&self) -> usize {
-        self.ob_type as usize
-    }
     fn ascii(&self) -> bool {
         true
     }
     fn kind(&self) -> u32 {
         1
     }
-    fn size(&self) -> Result<usize> {
-        usize::try_from(self.ob_size).map_err(|_| format_err!("Negative string length"))
+    fn size(&self) -> usize {
+        self.ob_size as usize
     }
-    fn address(&self, base: usize) -> Result<usize> {
-        base.checked_add(offset_of(self, &self.ob_sval))
-            .ok_or_else(|| format_err!("String address overflow"))
+    fn address(&self, base: usize) -> usize {
+        base + offset_of(self, &self.ob_sval)
     }
 }
 
