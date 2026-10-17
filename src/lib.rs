@@ -37,6 +37,7 @@ pub mod coredump;
 mod cython;
 #[cfg(feature = "cli")]
 pub mod dump;
+pub mod lazy_stack_trace;
 #[cfg(feature = "unwind")]
 mod native_stack_trace;
 mod python_bindings;

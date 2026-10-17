@@ -116,10 +116,10 @@ where
 const MAX_FRAMES: usize = 4096;
 
 pub(crate) struct RawFrame {
-    frame: usize,
-    code: usize,
-    lasti: i32,
-    is_entry: bool,
+    pub frame: usize,
+    pub code: usize,
+    pub lasti: i32,
+    pub is_entry: bool,
 }
 
 pub(crate) struct RawThread {
@@ -210,7 +210,18 @@ where
         frame_address = Some(read_struct(process, addr)?);
     }
 
-    let mut frame_ptr = thread.frame(frame_address);
+    unwind_frames_from(thread.frame(frame_address), process, out)
+}
+
+pub(crate) fn unwind_frames_from<F, P>(
+    mut frame_ptr: *const F,
+    process: &P,
+    out: &mut Vec<RawFrame>,
+) -> Result<(), Error>
+where
+    F: FrameObject,
+    P: ProcessMemory,
+{
     let start = out.len();
     let mut walked = 0;
 
@@ -413,7 +424,7 @@ pub fn get_gil_threadid<I: InterpreterState, P: ProcessMemory>(
     let addr = if I::HAS_GIL_RUNTIME_STATE {
         // get the gilruntimestate - note that this struct is identical between 3.12/3.13/3.14
         let gil_state: crate::python_bindings::v3_13_0::_gil_runtime_state =
-            process.copy_struct(threadstate_address)?;
+            read_struct(process, threadstate_address)?;
         // check to see if the GIL is locked already
         if gil_state.locked != 0 {
             gil_state.last_holder as usize
@@ -421,12 +432,12 @@ pub fn get_gil_threadid<I: InterpreterState, P: ProcessMemory>(
             0
         }
     } else {
-        process.copy_struct::<usize>(threadstate_address)?
+        read_struct::<usize, P>(process, threadstate_address)?
     };
 
     // if the addr is 0, no thread is currently holding the GIL
     let threadid = if addr != 0 {
-        let threadstate: I::ThreadState = process.copy_struct(addr)?;
+        let threadstate: I::ThreadState = read_struct(process, addr)?;
         threadstate.thread_id()
     } else {
         0

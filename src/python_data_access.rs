@@ -18,6 +18,34 @@ pub fn copy_string<T: StringObject, P: ProcessMemory>(
     process: &P,
     types: &PyTypes,
 ) -> Result<String, Error> {
+    let mut out = String::new();
+    read_string_into(ptr, process, types, &mut out)?;
+    Ok(out)
+}
+
+const MAX_STRING_LENGTH: usize = 4096;
+
+/// Like `copy_string`, but decodes into `out`, reusing its capacity. `out` is empty on error.
+pub fn read_string_into<T: StringObject, P: ProcessMemory>(
+    ptr: *const T,
+    process: &P,
+    types: &PyTypes,
+    out: &mut String,
+) -> Result<(), Error> {
+    out.clear();
+    let result = read_string_unchecked(ptr, process, types, out);
+    if result.is_err() {
+        out.clear();
+    }
+    result
+}
+
+fn read_string_unchecked<T: StringObject, P: ProcessMemory>(
+    ptr: *const T,
+    process: &P,
+    types: &PyTypes,
+    out: &mut String,
+) -> Result<(), Error> {
     let obj = copy_pointer(process, ptr)?;
     if obj.ob_type() != types.string {
         return Err(format_err!(
@@ -26,7 +54,7 @@ pub fn copy_string<T: StringObject, P: ProcessMemory>(
         ));
     }
     let length = obj.size()?;
-    if length >= 4096 {
+    if length >= MAX_STRING_LENGTH {
         return Err(format_err!("Refusing to copy {} chars of a string", length));
     }
 
@@ -40,7 +68,7 @@ pub fn copy_string<T: StringObject, P: ProcessMemory>(
         return Err(format_err!("ASCII string has non-one-byte kind {}", kind));
     }
     if length == 0 {
-        return Ok(String::new());
+        return Ok(());
     }
 
     // Length is below 4096 and kind is at most 4, so this cannot overflow.
@@ -49,36 +77,51 @@ pub fn copy_string<T: StringObject, P: ProcessMemory>(
     address
         .checked_add(byte_length)
         .ok_or_else(|| format_err!("String range overflow"))?;
-    let bytes = process.copy(address, byte_length)?;
 
-    match (kind, ascii) {
-        (4, _) => decode_ucs4(bytes),
-        (2, _) => decode_ucs2(bytes),
-        (1, true) => Ok(String::from_utf8(bytes)?),
-        (1, false) => Ok(bytes.iter().map(|&b| b as char).collect()),
-        _ => Err(format_err!("Unknown string kind {}", kind)),
+    if ascii {
+        // SAFETY: the bytes are validated as UTF-8 before returning, and `read_string_into`
+        // clears `out` on error.
+        let buf = unsafe { out.as_mut_vec() };
+        buf.resize(byte_length, 0);
+        process.read(address, buf)?;
+        std::str::from_utf8(buf)?;
+        return Ok(());
+    }
+
+    let mut storage = [0u8; MAX_STRING_LENGTH * 4];
+    let bytes = &mut storage[..byte_length];
+    process.read(address, bytes)?;
+    match kind {
+        4 => decode_ucs4(bytes, out),
+        2 => decode_ucs2(bytes, out),
+        _ => {
+            out.extend(bytes.iter().map(|&b| b as char));
+            Ok(())
+        }
     }
 }
 
-fn decode_ucs2(bytes: Vec<u8>) -> Result<String, Error> {
-    #[cfg(target_endian = "little")]
-    let result = String::from_utf16le(&bytes);
-    #[cfg(target_endian = "big")]
-    let result = String::from_utf16be(&bytes);
-
-    Ok(result?)
+fn decode_ucs2(bytes: &[u8], out: &mut String) -> Result<(), Error> {
+    let units = bytes
+        .chunks_exact(2)
+        .map(|chunk| u16::from_ne_bytes(chunk.try_into().unwrap()));
+    for c in char::decode_utf16(units) {
+        out.push(c?);
+    }
+    Ok(())
 }
 
-fn decode_ucs4(bytes: Vec<u8>) -> Result<String, Error> {
+fn decode_ucs4(bytes: &[u8], out: &mut String) -> Result<(), Error> {
     if bytes.len() % 4 != 0 {
         return Err(format_err!("UCS-4 byte length must be a multiple of 4"));
     }
 
-    let chars = bytes
-        .chunks_exact(4)
-        .map(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()))
-        .map(char::try_from);
-    Ok(chars.collect::<Result<String, _>>()?)
+    for chunk in bytes.chunks_exact(4) {
+        out.push(char::try_from(u32::from_ne_bytes(
+            chunk.try_into().unwrap(),
+        ))?);
+    }
+    Ok(())
 }
 
 /// Copies data from a PyBytesObject (currently only lnotab object)
@@ -86,6 +129,18 @@ pub fn copy_bytes<T: BytesObject, P: ProcessMemory>(
     ptr: *const T,
     process: &P,
 ) -> Result<Vec<u8>, Error> {
+    let mut out = Vec::new();
+    read_bytes_into(ptr, process, &mut out)?;
+    Ok(out)
+}
+
+/// Like `copy_bytes`, but reads into `out`, reusing its capacity
+pub fn read_bytes_into<T: BytesObject, P: ProcessMemory>(
+    ptr: *const T,
+    process: &P,
+    out: &mut Vec<u8>,
+) -> Result<(), Error> {
+    out.clear();
     let obj = copy_pointer(process, ptr)?;
     let size = obj.size()?;
     if size >= 65536 {
@@ -95,7 +150,12 @@ pub fn copy_bytes<T: BytesObject, P: ProcessMemory>(
     address
         .checked_add(size)
         .ok_or_else(|| format_err!("Byte range overflow"))?;
-    Ok(process.copy(address, size)?)
+    out.resize(size, 0);
+    if let Err(e) = process.read(address, out) {
+        out.clear();
+        return Err(e.into());
+    }
+    Ok(())
 }
 
 /// Copies a i64 from a PyLongObject. Returns the value + if it overflowed
@@ -664,21 +724,25 @@ pub mod tests {
             .into_iter()
             .flat_map(u32::to_ne_bytes)
             .collect();
-        assert_eq!(decode_ucs4(bytes).unwrap(), "\0Aé😀\u{10ffff}");
-        assert_eq!(decode_ucs4(Vec::new()).unwrap(), "");
+        let mut out = String::new();
+        decode_ucs4(&bytes, &mut out).unwrap();
+        assert_eq!(out, "\0Aé😀\u{10ffff}");
+        out.clear();
+        decode_ucs4(&[], &mut out).unwrap();
+        assert_eq!(out, "");
     }
 
     #[test]
     fn test_decode_ucs4_invalid_code_points() {
         for value in [0xd800_u32, 0xdfff, 0x110000, u32::MAX] {
-            assert!(decode_ucs4(value.to_ne_bytes().to_vec()).is_err());
+            assert!(decode_ucs4(&value.to_ne_bytes(), &mut String::new()).is_err());
         }
     }
 
     #[test]
     fn test_decode_ucs4_incomplete_code_points() {
         for length in [1, 2, 3, 5, 6, 7] {
-            assert!(decode_ucs4(vec![0; length]).is_err());
+            assert!(decode_ucs4(&vec![0; length], &mut String::new()).is_err());
         }
     }
 

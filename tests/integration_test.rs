@@ -1,6 +1,7 @@
 extern crate py_spy;
+use py_spy::lazy_stack_trace::SampleBuffers;
 use py_spy::{Config, Pid, PythonSpy};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 struct ScriptRunner {
     #[allow(dead_code)]
@@ -164,6 +165,66 @@ fn test_thread_names() {
             assert!(trace.thread_name.is_none());
         }
     }
+}
+
+#[test]
+fn test_lazy_sample_matches_stack_traces() {
+    #[cfg(target_os = "macos")]
+    {
+        // We need root permissions here to run this on OSX
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+    }
+    let config = Config {
+        include_idle: true,
+        lineno: py_spy::config::LineNo::LastInstruction,
+        ..Default::default()
+    };
+    let mut runner = TestRunner::new(config, "./tests/scripts/thread_names.py");
+
+    let expected: HashMap<u64, py_spy::StackTrace> = runner
+        .spy
+        .get_stack_traces()
+        .unwrap()
+        .into_iter()
+        .map(|trace| (trace.thread_id, trace))
+        .collect();
+
+    let mut bufs = SampleBuffers::default();
+    let (mut name, mut filename) = (String::new(), String::new());
+    let mut check = |trace: py_spy::lazy_stack_trace::LazyStackTrace| {
+        let eager = &expected[&trace.thread_id];
+        assert_eq!(trace.thread_name, eager.thread_name.as_deref());
+        assert_eq!(trace.owns_gil, eager.owns_gil);
+        assert_eq!(trace.os_thread_id, eager.os_thread_id);
+
+        let frames: Vec<_> = trace.frames().collect();
+        assert_eq!(frames.len(), eager.frames.len());
+        for (lazy, eager) in frames.iter().zip(&eager.frames) {
+            lazy.name(&mut name).unwrap();
+            lazy.filename(&mut filename).unwrap();
+            assert_eq!(name, eager.name);
+            assert_eq!(filename, eager.filename);
+            assert_eq!(lazy.line, eager.line);
+        }
+    };
+
+    let sample = runner.spy.sample(&mut bufs).unwrap();
+    assert_eq!(sample.len(), expected.len());
+    sample.traces().for_each(&mut check);
+
+    let mut walker = runner.spy.walk_threads(&mut bufs).unwrap();
+    let mut walked = 0;
+    while let Some(thread) = walker.next_thread().unwrap() {
+        assert_eq!(
+            thread.thread_name(),
+            expected[&thread.thread_id].thread_name.as_deref()
+        );
+        check(thread.unwind().unwrap());
+        walked += 1;
+    }
+    assert_eq!(walked, expected.len());
 }
 
 #[test]
