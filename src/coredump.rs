@@ -21,8 +21,8 @@ use crate::python_bindings::{
 use crate::python_data_access::format_variable;
 use crate::python_interpreters::InterpreterState;
 use crate::python_process_info::{
-    get_interpreter_address_with_debug_offsets, get_python_version, get_threadstate_address,
-    is_python_lib, ContainsAddr, PyTypes, PythonDebugOffsets, PythonProcessInfo,
+    get_interpreter_address, get_python_version, get_threadstate_address, is_python_lib,
+    ContainsAddr, PythonProcessInfo,
 };
 use crate::python_threading::thread_names_from_interpreter;
 use crate::stack_trace::{get_stack_traces, StackTrace};
@@ -182,8 +182,6 @@ pub struct PythonCoreDump {
     version: Version,
     interpreter_address: usize,
     threadstate_address: usize,
-    types: PyTypes,
-    debug_offsets: Option<PythonDebugOffsets>,
 }
 
 impl PythonCoreDump {
@@ -244,10 +242,7 @@ impl PythonCoreDump {
             get_python_version(&python_info, &core).context("failed to get python version")?;
         info!("Got python version {}", version);
 
-        let types = PyTypes::resolve(&python_info, &core, &version)?;
-
-        let (interpreter_address, debug_offsets) =
-            get_interpreter_address_with_debug_offsets(&python_info, &core, &version, &types)?;
+        let interpreter_address = get_interpreter_address(&python_info, &core, &version)?;
         info!("Found interpreter at 0x{:016x}", interpreter_address);
 
         // lets us figure out which thread has the GIL
@@ -261,8 +256,6 @@ impl PythonCoreDump {
             version,
             interpreter_address,
             threadstate_address,
-            types,
-            debug_offsets,
         })
     }
 
@@ -344,14 +337,11 @@ impl PythonCoreDump {
             &self.core,
             self.threadstate_address,
             Some(config),
-            &self.types,
         )?;
         let thread_names = thread_names_from_interpreter::<I, CoreDump>(
             self.interpreter_address,
             &self.core,
             &self.version,
-            &self.types,
-            self.debug_offsets.as_ref(),
         )
         .ok();
 
@@ -369,7 +359,6 @@ impl PythonCoreDump {
                             &self.version,
                             local.addr,
                             max_length,
-                            &self.types,
                         );
                         local.repr = Some(repr.unwrap_or_else(|_| "?".to_owned()));
                     }
@@ -487,11 +476,6 @@ mod test {
             version,
             interpreter_address: 0x000055a8293dbe20,
             threadstate_address: 0x000055a82745fe18,
-            types: PyTypes {
-                code: 0x000055a827436c00,
-                string: 0x000055a82744dd00,
-            },
-            debug_offsets: None,
         };
 
         let config = Config::default();
