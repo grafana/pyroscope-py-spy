@@ -84,6 +84,24 @@ jobs:
           path: dist
         if: runner.os == 'macOS'
 
+  asan:
+    runs-on: ubuntu-latest
+    needs: [lint]
+    env:
+      RUSTFLAGS: -Zsanitizer=address -Zsanitizer-recover=address
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Dependencies
+        run: sudo apt install libunwind-dev
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install nightly-2026-07-11 --profile minimal --component rust-src
+          rustup override set nightly-2026-07-11
+      - name: Test ASAN reporting
+        run: |
+          cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --lib asan::imp 2>&1 | tee asan-test.log
+          grep -qE "test result: ok\. [1-9][0-9]* passed" asan-test.log
+
   build-linux-cross:
     runs-on: ubuntu-latest
     needs: [lint]
