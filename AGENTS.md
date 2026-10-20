@@ -52,8 +52,7 @@ design around them, optimize them, or file issues whose impact is limited to the
   `src/speedscope.rs`, `src/chrometrace.rs`, `src/dump.rs`, `src/coredump.rs`, clap
   argument parsing in `src/config.rs`.
 - `unwind` feature (`--native`): `src/native_stack_trace.rs`, `src/cython.rs`, and the
-  Python/native stack merge. `Frame::is_shim_entry` only matters for that merge; Python
-  frames no longer set it.
+  Python/native stack merge. `Frame::is_shim_entry` only matters for that merge.
 - Local variable dumping: `dump_locals`, `Frame::locals`, value formatting in
   `src/python_data_access.rs` beyond strings.
 - Subprocess sampling (`subprocesses`, `Sampler::new_subprocess_sampler`).
@@ -61,35 +60,6 @@ design around them, optimize them, or file issues whose impact is limited to the
 - `include_idle` inside this crate (downstream filters on `StackTrace::active` itself).
 - Windows, FreeBSD, and Python bindings older than 3.10.
 - `examples/`, `ci/`, and the maturin/PyPI wheel jobs in `.github/workflows/build.yml`.
-
-## Python 3.12+ frame handling
-
-`src/python_interpreters.rs` classifies `_PyInterpreterFrame` the way CPython's own
-out-of-process profilers do (`_testexternalinspection.c` in 3.13,
-`_remote_debugging_module.c` in 3.14): skip by `owner` and a NULL executable, via
-`FrameObject::is_python_frame()`, before reading the code object. 3.12 skips by `owner`
-only; its entry frame is the only `FRAME_OWNED_BY_CSTACK` frame.
-
-- 3.13+ also pushes `FRAME_OWNED_BY_THREAD` frames with a real `<shim>` code object
-  (`CALL_ALLOC_AND_ENTER_INIT`). They pass `is_python_frame()` and are dropped by the
-  `<shim>` filename check in `resolve_frames`.
-
-- Free-threaded (`Py_GIL_DISABLED`) builds are not supported. The bindings are generated
-  from the default build, whose `_PyInterpreterFrame` layout and `Py_TAG_BITS` differ.
-  Reason about tagging with the default build only.
-- 3.14 `f_executable` is a `_PyStackRef`. `code()` masks `Py_TAG_BITS` because the
-  sentinels `PyStackRef_NULL` (`bits == 1`) and `PyStackRef_None`
-  (`&_Py_NoneStruct | 1`) are tagged, so a NULL check needs the mask.
-- 3.14 `lasti()` deliberately does not mask. On the default build a stackref is tagged
-  only for immortal objects, and code objects are never immortal in 3.14 (deep-freeze was
-  removed in 3.13; constant interning immortalizes strings, tuples, frozensets and slices,
-  not code). Frames whose executable is a tagged sentinel are filtered by
-  `is_python_frame()` before `lasti()` runs, so it only ever sees a plain pointer. Revisit
-  if CPython starts tagging code stackrefs.
-
-## Object type validation
-
-`resolve_frames` rejects any code object whose `ob_type` is not exactly `PyCode_Type`, and `copy_string` rejects any string that is not exactly `PyUnicode_Type` (addresses in `PyTypes`). Str subclasses are deliberately unsupported: a frame whose `co_filename`, `co_name` or `co_qualname` is a str subclass is dropped, and a str-subclass key or `_name` met during the thread-name lookup fails the whole lookup. Do not loosen the check to `tp_flags` or a `tp_base` walk to handle them.
 
 ## Changing the public API
 
