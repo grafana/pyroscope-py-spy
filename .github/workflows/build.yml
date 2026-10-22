@@ -52,14 +52,14 @@ jobs:
       - name: Test
         id: test
         continue-on-error: true
-        run: cargo test --release
+        run: cargo test --release --workspace
       - name: Test (retry#1)
         id: test1
-        run: cargo test --release
+        run: cargo test --release --workspace
         if: steps.test.outcome=='failure'
         continue-on-error: true
       - name: Test (retry#2)
-        run: cargo test --release
+        run: cargo test --release --workspace
         if: steps.test1.outcome=='failure'
       - name: Build Wheel - universal2
         env:
