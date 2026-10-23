@@ -4,7 +4,7 @@ cli = ["dep:clap", "dep:clap_complete", "dep:console", "dep:ctrlc", "dep:indicat
 unwind = ["remoteprocess/unwind"]
 
 [workspace]
-members = [".", "signal-ringbuffer", "signal-timer"]
+members = [".", "signal-ringbuffer", "signal-timer", "signal-unwind"]
 
 [package]
 name = "py-spy"
