@@ -46,6 +46,9 @@ jobs:
         run: cargo build --release --verbose --lib --no-default-features
       - uses: actions/setup-python@v6
         with:
+          python-version: 3.14
+      - uses: actions/setup-python@v6
+        with:
           python-version: 3.9
       - name: Install optional numpy dependency
         run: pip install numpy>=2
@@ -53,13 +56,19 @@ jobs:
         id: test
         continue-on-error: true
         run: cargo test --release --workspace
+        env:
+          PYO3_PYTHON: python3.14
       - name: Test (retry#1)
         id: test1
         run: cargo test --release --workspace
+        env:
+          PYO3_PYTHON: python3.14
         if: steps.test.outcome=='failure'
         continue-on-error: true
       - name: Test (retry#2)
         run: cargo test --release --workspace
+        env:
+          PYO3_PYTHON: python3.14
         if: steps.test1.outcome=='failure'
       - name: Build Wheel - universal2
         env:
