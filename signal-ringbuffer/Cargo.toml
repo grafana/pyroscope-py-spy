@@ -1,0 +1,13 @@
+[package]
+name = "signal-ringbuffer"
+version = "0.1.0"
+description = "Async-signal-safe ring buffer: write from a signal handler, read from a normal thread"
+license = "Apache-2.0"
+edition = "2021"
+rust-version = "1.98"
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+libc = "0.2"
