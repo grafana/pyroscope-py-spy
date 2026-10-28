@@ -4,7 +4,7 @@ cli = ["dep:clap", "dep:clap_complete", "dep:console", "dep:ctrlc", "dep:indicat
 unwind = ["remoteprocess/unwind"]
 
 [workspace]
-members = [".", "signal-ringbuffer", "signal-timer", "signal-unwind"]
+members = [".", "signal-ringbuffer", "signal-sampler-tests", "signal-timer", "signal-unwind"]
 
 [package]
 name = "py-spy"
@@ -56,6 +56,11 @@ chrono = "0.4.44"
 
 [dev-dependencies]
 py-spy-testdata = "0.1.0"
+
+[target.'cfg(all(unix, any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
+signal-ringbuffer = { path = "signal-ringbuffer" }
+signal-timer = { path = "signal-timer" }
+signal-unwind = { path = "signal-unwind" }
 
 [target.'cfg(unix)'.dependencies]
 termios = "0.3.3"

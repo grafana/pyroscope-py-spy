@@ -1,0 +1,13 @@
+[package]
+name = "signal-sampler-tests"
+version = "0.1.0"
+description = "Tests py-spy's signal handler sampler against embedded CPython; kept out of py-spy so maturin does not see pyo3"
+license = "MIT"
+edition = "2021"
+publish = false
+
+[dev-dependencies]
+libc = "0.2"
+py-spy = { path = "..", default-features = false }
+pyo3 = { version = "0.30", features = ["auto-initialize"] }
+signal-timer = { path = "../signal-timer" }

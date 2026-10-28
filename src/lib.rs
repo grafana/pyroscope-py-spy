@@ -46,6 +46,8 @@ pub mod python_process_info;
 pub mod python_spy;
 mod python_threading;
 pub mod sampler;
+#[cfg(all(unix, any(target_arch = "x86_64", target_arch = "aarch64")))]
+mod signal_sampler;
 pub mod stack_trace;
 pub mod timer;
 mod utils;
