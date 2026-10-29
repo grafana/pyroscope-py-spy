@@ -4,6 +4,7 @@ use std::collections::HashSet;
 #[cfg(all(target_os = "linux", feature = "unwind"))]
 use std::iter::FromIterator;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Error, Result};
 use remoteprocess::{Pid, Process, ProcessMemory, Tid};
@@ -12,19 +13,15 @@ use crate::config::{Config, LockingStrategy};
 #[cfg(feature = "unwind")]
 use crate::native_stack_trace::NativeStack;
 use crate::python_bindings::{
-    v2_7_15, v3_10_0, v3_11_0, v3_12_0, v3_13_0, v3_14_0, v3_3_7, v3_5_5, v3_6_6, v3_7_0, v3_8_0,
-    v3_9_5,
+    v2_7_15, v3_10_0, v3_11_0, v3_12_0, v3_13_0, v3_14_0, v3_15_0, v3_3_7, v3_5_5, v3_6_6, v3_7_0,
+    v3_8_0, v3_9_5,
 };
 use crate::python_data_access::format_variable;
 use crate::python_interpreters::{InterpreterState, ThreadState};
-use crate::python_process_info::{
-    get_interpreter_address_with_debug_offsets, get_python_version, get_threadstate_address,
-    PyTypes, PythonDebugOffsets, PythonProcessInfo,
-};
+use crate::python_process_info::{get_python_version, PythonProcessInfo, PythonProcessLayout};
 use crate::python_threading::thread_name_lookup;
 use crate::stack_trace::{
-    copy_pointer, get_gil_threadid, resolve_frames, unwind_frames, RawThread, StackTrace,
-    UnwindBuffers,
+    get_gil_threadid, resolve_frames, unwind_frames, RawThread, StackTrace, UnwindBuffers,
 };
 use crate::version::Version;
 
@@ -33,16 +30,14 @@ pub struct PythonSpy {
     pub pid: Pid,
     pub process: Process,
     pub version: Version,
-    pub interpreter_address: usize,
-    pub threadstate_address: usize,
-    pub(crate) types: PyTypes,
+    pub addresses: PythonProcessLayout,
     pub config: Config,
     #[cfg(feature = "unwind")]
     pub native: Option<NativeStack>,
     pub short_filenames: HashMap<String, Option<String>>,
     pub python_thread_ids: HashMap<u64, Tid>,
-    pub python_thread_names: HashMap<u64, String>,
-    pub(crate) debug_offsets: Option<PythonDebugOffsets>,
+    pub python_thread_names: HashMap<u64, Option<String>>,
+    thread_name_lookup_time: Instant,
     #[cfg(target_os = "linux")]
     pub dockerized: bool,
 }
@@ -65,20 +60,11 @@ impl PythonSpy {
         let version = get_python_version(&python_info, &process)?;
         info!("python version {} detected", version);
 
-        let types = PyTypes::resolve(&python_info, &process, &version)?;
-
-        let (interpreter_address, debug_offsets) =
-            get_interpreter_address_with_debug_offsets(&python_info, &process, &version, &types)?;
-        info!("Found interpreter at 0x{:016x}", interpreter_address);
-
-        // lets us figure out which thread has the GIL
-        let threadstate_address = get_threadstate_address(
-            interpreter_address,
-            &python_info,
-            &process,
-            &version,
-            config,
-        )?;
+        let addresses = PythonProcessLayout::new(&python_info, &process, &version, config)?;
+        info!(
+            "Found interpreter at 0x{:016x}",
+            addresses.interpreter_address
+        );
 
         #[cfg(feature = "unwind")]
         let native = if config.native {
@@ -95,9 +81,7 @@ impl PythonSpy {
             pid,
             process,
             version,
-            interpreter_address,
-            threadstate_address,
-            types,
+            addresses,
             #[cfg(feature = "unwind")]
             native,
             #[cfg(target_os = "linux")]
@@ -106,7 +90,7 @@ impl PythonSpy {
             short_filenames: HashMap::new(),
             python_thread_ids: HashMap::new(),
             python_thread_names: HashMap::new(),
-            debug_offsets,
+            thread_name_lookup_time: Instant::now(),
         })
     }
 
@@ -200,6 +184,11 @@ impl PythonSpy {
                 minor: 14,
                 ..
             } => self._get_stack_traces::<v3_14_0::_is>(bufs),
+            Version {
+                major: 3,
+                minor: 15,
+                ..
+            } => self._get_stack_traces::<v3_15_0::_is>(bufs),
             _ => Err(format_err!(
                 "Unsupported version of Python: {}",
                 self.version
@@ -240,29 +229,34 @@ impl PythonSpy {
         };
 
         // Find PyThreadState, and loop over all the python threads
-        let threadstate_ptr_ptr = I::threadstate_ptr_ptr(self.interpreter_address);
+        let threadstate_ptr_ptr = I::threadstate_ptr_ptr(self.addresses.interpreter_address);
         let threads_head = self
             .process
             .copy_pointer(threadstate_ptr_ptr)
             .context("Failed to copy PyThreadState head pointer")?;
 
         // get the threadid of the gil if appropriate
-        let gil_thread_id = get_gil_threadid::<I, Process>(self.threadstate_address, &self.process)
-            .context("failed to get gil_thread_id")?;
+        let gil_thread_id =
+            get_gil_threadid::<I, Process>(self.addresses.threadstate_address, &self.process)
+                .context("failed to get gil_thread_id")?;
+
+        let mut did_thread_name_lookup = false;
 
         bufs.frames.clear();
         bufs.threads.clear();
         let mut threads = threads_head;
-        let mut walked = 0;
+        let mut visited = 0;
         while !threads.is_null() {
-            walked += 1;
+            visited += 1;
             // This seems to happen occasionally when scanning BSS addresses for valid interpreters
-            if walked > 4096 {
+            if visited > 4096 {
                 return Err(format_err!("Max thread recursion depth reached"));
             }
 
-            let thread =
-                copy_pointer(&self.process, threads).context("Failed to copy PyThreadState")?;
+            let thread = self
+                .process
+                .copy_pointer(threads)
+                .context("Failed to copy PyThreadState")?;
             threads = thread.next();
 
             let python_thread_id = thread.thread_id();
@@ -273,9 +267,8 @@ impl PythonSpy {
             }
 
             let start = bufs.frames.len();
-            unwind_frames(&thread, &self.process, &mut bufs.frames).with_context(|| {
-                format!("Failed to unwind frames for thread {}", python_thread_id)
-            })?;
+            unwind_frames(&thread, &self.process, &mut bufs.frames)
+                .context("Failed to unwind frames")?;
             bufs.threads.push(RawThread {
                 thread_id: python_thread_id,
                 os_thread_id: thread.native_thread_id(),
@@ -298,9 +291,9 @@ impl PythonSpy {
                 &self.process,
                 self.config.dump_locals > 0,
                 self.config.lineno,
-                &self.types,
+                &self.addresses.type_checks,
             )
-            .with_context(|| format!("Failed to resolve frames for thread {}", python_thread_id))?;
+            .context("Failed to resolve frames")?;
             let mut trace = StackTrace {
                 pid: self.process.pid,
                 thread_id: python_thread_id,
@@ -336,9 +329,11 @@ impl PythonSpy {
                 trace.os_thread_id = os_thread_id.map(|id| id as u64);
             }
 
-            if self.config.include_thread_names {
-                trace.thread_name = self._get_python_thread_name(python_thread_id);
-            }
+            trace.thread_name = if self.config.collect_thread_names {
+                self._get_python_thread_name(&mut did_thread_name_lookup, python_thread_id)
+            } else {
+                None
+            };
 
             // Figure out if the thread is sleeping from the OS if possible
             trace.active = true;
@@ -383,7 +378,7 @@ impl PythonSpy {
                             &self.version,
                             local.addr,
                             max_length,
-                            &self.types,
+                            &self.addresses.type_checks,
                         );
                         local.repr = Some(repr.unwrap_or_else(|_| "?".to_owned()));
                     }
@@ -581,12 +576,37 @@ impl PythonSpy {
         Ok(None)
     }
 
-    fn _get_python_thread_name(&mut self, python_thread_id: u64) -> Option<String> {
+    fn _get_python_thread_name(
+        &mut self,
+        did_thread_name_lookup: &mut bool,
+        python_thread_id: u64,
+    ) -> Option<String> {
+        // a thread can get a name after the lookup, for instance when the threading module
+        // is imported later, so look up threads without a name again once the lookup is this old
+        const THREAD_NAME_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+
         match self.python_thread_names.get(&python_thread_id) {
-            Some(thread_name) => Some(thread_name.clone()),
-            None => {
-                self.python_thread_names = thread_name_lookup(self).unwrap_or_default();
-                self.python_thread_names.get(&python_thread_id).cloned()
+            Some(Some(thread_name)) => Some(thread_name.clone()),
+            Some(None) if self.thread_name_lookup_time.elapsed() < THREAD_NAME_RETRY_INTERVAL => {
+                None
+            }
+            _ => {
+                // avoid triggering a lookup if we already did one during this sample
+                if !*did_thread_name_lookup {
+                    info!("looking up thread names");
+                    self.python_thread_names = thread_name_lookup(self)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(k, v)| (k, Some(v)))
+                        .collect();
+                    self.thread_name_lookup_time = Instant::now();
+                    *did_thread_name_lookup = true;
+                }
+                // avoid triggering a lookup next time if the thread has no name
+                self.python_thread_names
+                    .entry(python_thread_id)
+                    .or_insert(None)
+                    .clone()
             }
         }
     }

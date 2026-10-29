@@ -20,8 +20,8 @@ pub struct Config {
     /// the native stack traces
     pub native: bool,
 
-    /// Whether or not to look up python thread names from the `threading` module
-    pub include_thread_names: bool,
+    #[doc(hidden)]
+    pub type_checks: TypesConfig,
 
     // The following config options only apply when using py-spy as an application
     #[doc(hidden)]
@@ -45,6 +45,8 @@ pub struct Config {
     #[doc(hidden)]
     pub include_thread_ids: bool,
     #[doc(hidden)]
+    pub collect_thread_names: bool,
+    #[doc(hidden)]
     pub subprocesses: bool,
     #[doc(hidden)]
     pub gil_only: bool,
@@ -64,6 +66,18 @@ pub struct Config {
     pub refresh_seconds: f64,
     #[doc(hidden)]
     pub core_filename: Option<String>,
+}
+
+/// How to check the types of objects read from the python process
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum TypesConfig {
+    /// Don't check types
+    Disabled,
+    /// Only accept objects that are exactly of the expected type
+    #[allow(dead_code)]
+    Strict,
+    /// Like strict, but accept subclasses of str and dict
+    AllowSubclasses,
 }
 
 #[allow(non_camel_case_types)]
@@ -126,10 +140,11 @@ impl Default for Config {
             sampling_rate: 100,
             duration: RecordDuration::Unlimited,
             native: false,
-            include_thread_names: true,
+            type_checks: TypesConfig::Disabled,
             gil_only: false,
             include_idle: false,
             include_thread_ids: false,
+            collect_thread_names: true,
             hide_progress: false,
             capture_output: true,
             dump_json: false,
@@ -346,6 +361,16 @@ impl Config {
                     .action(ArgAction::Set),
             );
 
+        let type_checks = Arg::new("type_checks")
+            .long("type-check")
+            .help(
+                "Fail on code objects, strings and dicts that are not of the expected python type",
+            )
+            .action(ArgAction::SetTrue);
+        let record = record.arg(type_checks.clone());
+        let top = top.arg(type_checks.clone());
+        let dump = dump.arg(type_checks);
+
         let record = record.arg(native.clone());
         let top = top.arg(native.clone());
         let dump = dump.arg(native.clone());
@@ -451,6 +476,11 @@ impl Config {
 
         config.subprocesses = matches.get_flag("subprocesses");
         config.command = subcommand.to_owned();
+        config.collect_thread_names = match subcommand {
+            "record" => config.include_thread_ids || config.format == Some(FileFormat::speedscope),
+            "top" => false,
+            _ => true,
+        };
 
         // options that can be shared between subcommands
         config.pid = matches.get_one::<String>("pid").map(|p| {
@@ -462,6 +492,11 @@ impl Config {
         });
 
         config.full_filenames = matches.get_flag("full_filenames");
+        config.type_checks = if matches.get_flag("type_checks") {
+            TypesConfig::AllowSubclasses
+        } else {
+            TypesConfig::Disabled
+        };
         if cfg!(feature = "unwind") {
             config.native = matches.get_flag("native");
         }
@@ -562,11 +597,26 @@ mod tests {
         assert_eq!(config.include_idle, false);
         assert_eq!(config.gil_only, false);
         assert_eq!(config.include_thread_ids, false);
+        assert_eq!(config.collect_thread_names, false);
 
         let config_flags = get_config("py-spy r -p 1234 -o foo --idle --gil --threads").unwrap();
         assert_eq!(config_flags.include_idle, true);
         assert_eq!(config_flags.gil_only, true);
         assert_eq!(config_flags.include_thread_ids, true);
+        assert_eq!(config_flags.collect_thread_names, true);
+
+        let speedscope = get_config("py-spy record -p 1234 -f speedscope").unwrap();
+        assert_eq!(speedscope.collect_thread_names, true);
+
+        let raw = get_config("py-spy record -p 1234 -f raw").unwrap();
+        assert_eq!(raw.collect_thread_names, false);
+
+        let chrometrace = get_config("py-spy record -p 1234 -f chrometrace").unwrap();
+        assert_eq!(chrometrace.collect_thread_names, false);
+
+        let chrometrace_threads =
+            get_config("py-spy record -p 1234 -f chrometrace --threads").unwrap();
+        assert_eq!(chrometrace_threads.collect_thread_names, true);
     }
 
     #[test]
@@ -575,6 +625,7 @@ mod tests {
         let config = get_config("py-spy dump --pid 1234").unwrap();
         assert_eq!(config.pid, Some(1234));
         assert_eq!(config.command, String::from("dump"));
+        assert_eq!(config.collect_thread_names, true);
 
         // short version
         let short_config = get_config("py-spy d -p 1234").unwrap();
@@ -588,11 +639,21 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_type_check_args() {
+        let config = get_config("py-spy dump --pid 1234").unwrap();
+        assert_eq!(config.type_checks, TypesConfig::Disabled);
+
+        let config = get_config("py-spy record --pid 1234 --type-check").unwrap();
+        assert_eq!(config.type_checks, TypesConfig::AllowSubclasses);
+    }
+
+    #[test]
     fn test_parse_top_args() {
         // basic use case
         let config = get_config("py-spy top --pid 1234").unwrap();
         assert_eq!(config.pid, Some(1234));
         assert_eq!(config.command, String::from("top"));
+        assert_eq!(config.collect_thread_names, false);
 
         // short version
         let short_config = get_config("py-spy t -p 1234").unwrap();
