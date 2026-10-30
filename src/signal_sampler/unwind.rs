@@ -17,7 +17,7 @@ pub use layout::{Layout, V3_11, V3_12, V3_13, V3_14};
 use super::ringbuffer::Record;
 use core::marker::PhantomData;
 
-const OB_TYPE: usize = 8;
+pub const OB_TYPE: usize = 8;
 const WORD: usize = size_of::<usize>();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
