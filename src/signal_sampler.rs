@@ -1,6 +1,6 @@
 //! Samples the current process by unwinding python stacks inside a `SIGPROF` handler.
 //!
-//! The handlers live in [`unwind::handler`]. They record code object addresses into a
+//! The handler lives in [`unwind::handler`]. It records code object addresses into a
 //! ring buffer. A normal thread drains it and resolves names, tolerating code objects that were
 //! freed in the meantime. A tick interrupts one running thread, so only threads on the CPU are
 //! sampled.
@@ -19,8 +19,8 @@ use crate::python_spy::PythonSpy;
 use crate::stack_trace::{resolve_frames, RawFrame, StackTrace};
 use ringbuffer::PopError;
 use timer::{Mode, SignalHandler, Timer};
-use unwind::handler::{self, Handler, ThreadStateGetter};
-use unwind::{Frame, V3_11, V3_12, V3_13, V3_14};
+use unwind::handler;
+use unwind::{Frame, ThreadStateGetter, V3_11, V3_12, V3_13, V3_14};
 
 #[doc(hidden)]
 pub mod ringbuffer;
@@ -46,12 +46,14 @@ fn lookup_thread_state_getter() -> Result<ThreadStateGetter, Error> {
     Ok(unsafe { std::mem::transmute::<usize, ThreadStateGetter>(addr) })
 }
 
-fn handler_for(minor: u64) -> Option<Handler> {
+type Configure = fn(usize, ThreadStateGetter, usize);
+
+fn configure_for(minor: u64) -> Option<Configure> {
     Some(match minor {
-        11 => handler::handler::<V3_11>(),
-        12 => handler::handler::<V3_12>(),
-        13 => handler::handler::<V3_13>(),
-        14 => handler::handler::<V3_14>(),
+        11 => handler::configure::<V3_11>,
+        12 => handler::configure::<V3_12>,
+        13 => handler::configure::<V3_13>,
+        14 => handler::configure::<V3_14>,
         _ => return None,
     })
 }
@@ -70,8 +72,8 @@ pub struct SignalHandlerSession {
 
 impl SignalHandlerSession {
     pub fn start(spy: &PythonSpy) -> Result<SignalHandlerSession, Error> {
-        let on_signal = match spy.version.major {
-            3 => handler_for(spy.version.minor),
+        let configure = match spy.version.major {
+            3 => configure_for(spy.version.minor),
             _ => None,
         }
         .ok_or_else(|| {
@@ -87,17 +89,20 @@ impl SignalHandlerSession {
         }
         unwind::init()
             .map_err(|e| format_err!("failed to install memory fault handlers: {:?}", e))?;
-        let code_type = lookup(c"PyCode_Type")?;
-        handler::configure(code_type, lookup_thread_state_getter()?, MAX_FRAMES);
+        let TypeChecks::Strict(types) = spy.addresses.type_checks else {
+            return Err(format_err!(
+                "unwinding in the signal handler requires strict type checks"
+            ));
+        };
+        configure(types.code, lookup_thread_state_getter()?, MAX_FRAMES);
 
         // Discard what a previous session left behind.
         let mut buf = vec![Frame::default(); MAX_FRAMES];
         if let Some(mut consumer) = handler::consumer() {
             while consumer.pop_slice(&mut buf).is_ok() {}
         }
-        handler::take_dropped();
 
-        let signal_handler = SignalHandler::install(Timer::SIGNAL, on_signal)?;
+        let signal_handler = SignalHandler::install(Timer::SIGNAL, handler::handler)?;
         let interval = Duration::from_secs_f64(1.0 / spy.config.sampling_rate as f64);
         let mode = match spy.config.signal_timer {
             SignalTimer::ITimer => Mode::ITimer,
@@ -135,10 +140,6 @@ impl SignalHandlerSession {
                 Ok(trace) => traces.push(trace),
                 Err(e) => errors.push((spy.pid, e)),
             }
-        }
-        let dropped = handler::take_dropped();
-        if dropped > 0 {
-            debug!("dropped {} samples taken in the signal handler", dropped);
         }
         (traces, errors)
     }

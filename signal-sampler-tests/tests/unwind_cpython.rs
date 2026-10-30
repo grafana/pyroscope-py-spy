@@ -126,7 +126,6 @@ fn check_triggered(py: &Py, scenario: &str) {
     let src = format!("{PRELUDE}{scenario}");
     let _code = py.run(&src);
     let stacks = py.drain();
-    assert_eq!(handler::take_dropped(), 0);
     assert_eq!(stacks.len(), 1, "{stacks:?}");
     let stack = &stacks[0];
     let mut expected_names = vec!["trigger"];
@@ -155,7 +154,6 @@ fn check_spin(py: &Py, mode: Mode) {
     let _code = py.run(SPIN);
     drop(timer);
     let stacks = py.drain();
-    assert_eq!(handler::take_dropped(), 0);
     assert!(stacks.len() >= 50, "{} samples", stacks.len());
     for stack in &stacks {
         let names = names(stack);
@@ -186,18 +184,18 @@ fn cpython() {
         };
         py.globals.set_item("__name__", "__main__").unwrap();
         py_spy::signal_sampler::unwind::init().unwrap();
-        handler::configure(
+        let configure = match minor {
+            11 => handler::configure::<V3_11>,
+            12 => handler::configure::<V3_12>,
+            13 => handler::configure::<V3_13>,
+            _ => handler::configure::<V3_14>,
+        };
+        configure(
             &raw const ffi::PyCode_Type as usize,
             this_thread_state,
             MAX_FRAMES,
         );
-        let handler = match minor {
-            11 => handler::handler::<V3_11>(),
-            12 => handler::handler::<V3_12>(),
-            13 => handler::handler::<V3_13>(),
-            _ => handler::handler::<V3_14>(),
-        };
-        let _handler = SignalHandler::install(Timer::SIGNAL, handler).unwrap();
+        let _handler = SignalHandler::install(Timer::SIGNAL, handler::handler).unwrap();
 
         {
             for scenario in [CALLS, ENTRY_FRAMES, THREAD] {
@@ -206,12 +204,10 @@ fn cpython() {
 
             let _code = py.run(&format!("{PRELUDE}{DEEP}"));
             assert!(py.drain().is_empty());
-            assert_eq!(handler::take_dropped(), 1);
 
             check_spin(&py, Mode::ITimer);
             #[cfg(target_os = "linux")]
             check_spin(&py, Mode::CTimer);
         }
-        assert_eq!(handler::take_dropped(), 0);
     });
 }

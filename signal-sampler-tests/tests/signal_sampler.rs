@@ -5,7 +5,7 @@
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 
-use py_spy::config::{LockingStrategy, SignalTimer};
+use py_spy::config::{LockingStrategy, SignalTimer, TypesConfig};
 use py_spy::sampler::Sampler;
 use py_spy::Config;
 use pyo3::prelude::*;
@@ -43,6 +43,7 @@ fn check(py: Python<'_>, signal_timer: SignalTimer) {
         let config = Config {
             blocking: LockingStrategy::NonBlocking,
             unwind_in_signal_handler: true,
+            type_checks: TypesConfig::Strict,
             signal_timer,
             include_thread_ids: true,
             sampling_rate: 239,

@@ -1,5 +1,5 @@
 /// Field offsets of one CPython minor version, default (GIL) build, 64-bit.
-pub trait Layout {
+pub trait Layout: Sync + 'static {
     /// Offset in `PyThreadState` of the current frame, or of `cframe` if [`Layout::CFRAME_FRAME`] is set.
     const THREAD_FRAME: usize;
     /// Offset in `_PyCFrame` of the current frame.
