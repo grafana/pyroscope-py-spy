@@ -17,6 +17,7 @@ use crate::python_interpreters::FrameObject;
 use crate::python_process_info::TypeChecks;
 use crate::python_spy::PythonSpy;
 use crate::stack_trace::{resolve_frames, RawFrame, StackTrace};
+use crate::version::Version;
 use ringbuffer::PopError;
 use timer::{Mode, SignalHandler, Timer};
 use unwind::handler;
@@ -48,13 +49,18 @@ fn lookup_thread_state_getter() -> Result<ThreadStateGetter, Error> {
 
 type Configure = fn(usize, ThreadStateGetter, usize);
 
-fn configure_for(minor: u64) -> Option<Configure> {
-    Some(match minor {
-        11 => handler::configure::<V3_11>,
-        12 => handler::configure::<V3_12>,
-        13 => handler::configure::<V3_13>,
-        14 => handler::configure::<V3_14>,
-        _ => return None,
+fn configure_for(version: &Version) -> Result<Configure, Error> {
+    Ok(match (version.major, version.minor) {
+        (3, 11) => handler::configure::<V3_11>,
+        (3, 12) => handler::configure::<V3_12>,
+        (3, 13) => handler::configure::<V3_13>,
+        (3, 14) => handler::configure::<V3_14>,
+        _ => {
+            return Err(format_err!(
+                "unwinding in the signal handler supports only Python 3.11 to 3.14, found {}",
+                version
+            ))
+        }
     })
 }
 
@@ -72,16 +78,7 @@ pub struct SignalHandlerSession {
 
 impl SignalHandlerSession {
     pub fn start(spy: &PythonSpy) -> Result<SignalHandlerSession, Error> {
-        let configure = match spy.version.major {
-            3 => configure_for(spy.version.minor),
-            _ => None,
-        }
-        .ok_or_else(|| {
-            format_err!(
-                "unwinding in the signal handler supports only Python 3.11 to 3.14, found {}",
-                spy.version
-            )
-        })?;
+        let configure = configure_for(&spy.version)?;
         if spy.pid != std::process::id() as Pid {
             return Err(format_err!(
                 "unwinding in the signal handler works only for the current process"
