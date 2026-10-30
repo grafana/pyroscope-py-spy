@@ -1,6 +1,6 @@
 //! Stress tests: many threads writing and reading, and many threads writing from signal handlers.
 
-use signal_ringbuffer::{Consumer, PopError, Producer, RingBuffer};
+use py_spy::signal_sampler::ringbuffer::{Consumer, PopError, Producer, RingBuffer};
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 

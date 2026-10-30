@@ -1,11 +1,11 @@
 //! Unwinds the CPython that pyo3 links, 3.11 to 3.14: build with e.g. `PYO3_PYTHON=python3.14`.
 
+use py_spy::signal_sampler::timer::{Mode, SignalHandler, Timer};
+use py_spy::signal_sampler::unwind::handler;
+use py_spy::signal_sampler::unwind::{Frame, V3_11, V3_12, V3_13, V3_14};
 use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use signal_timer::{Mode, SignalHandler, Timer};
-use signal_unwind::handler;
-use signal_unwind::{Frame, V3_11, V3_12, V3_13, V3_14};
 use std::time::Duration;
 
 const MAX_FRAMES: usize = 128;
@@ -148,7 +148,9 @@ fn check_spin(py: &Py, mode: Mode) {
     let timer = Timer::start(mode, Duration::from_millis(1)).unwrap();
     #[cfg(target_os = "linux")]
     if mode == Mode::CTimer {
-        timer.thread_created(signal_timer::gettid()).unwrap();
+        timer
+            .thread_created(py_spy::signal_sampler::timer::gettid())
+            .unwrap();
     }
     let _code = py.run(SPIN);
     drop(timer);
@@ -183,7 +185,7 @@ fn cpython() {
             globals: PyDict::new(py),
         };
         py.globals.set_item("__name__", "__main__").unwrap();
-        signal_unwind::init().unwrap();
+        py_spy::signal_sampler::unwind::init().unwrap();
         handler::configure(
             &raw const ffi::PyCode_Type as usize,
             this_thread_state,

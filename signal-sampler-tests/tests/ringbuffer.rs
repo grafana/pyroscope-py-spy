@@ -1,4 +1,4 @@
-use signal_ringbuffer::{Consumer, Full, PopError, Producer, RingBuffer};
+use py_spy::signal_sampler::ringbuffer::{Consumer, Full, PopError, Producer, RingBuffer};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 

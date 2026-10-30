@@ -81,57 +81,13 @@ jobs:
           path: dist
         if: runner.os == 'macOS'
 
-  test-signal-ringbuffer:
-    runs-on: ${{ matrix.os }}
-    needs: [lint]
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 # zizmor: ignore[cache-poisoning]
-      - name: Test
-        run: cargo test --release -p signal-ringbuffer
-
-  test-signal-timer:
-    runs-on: ${{ matrix.os }}
-    needs: [lint]
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 # zizmor: ignore[cache-poisoning]
-      - name: Test
-        run: cargo test --release -p signal-timer
-
-  test-signal-unwind:
-    runs-on: ${{ matrix.os }}
-    needs: [lint]
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        python: ["3.11", "3.12", "3.13", "3.14"]
-    steps:
-      - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2 # zizmor: ignore[cache-poisoning]
-      - uses: actions/setup-python@v7
-        with:
-          python-version: ${{ matrix.python }}
-      - name: Test
-        run: cargo test --release -p signal-unwind
-        env:
-          PYO3_PYTHON: python${{ matrix.python }}
-
   test-signal-sampler:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     needs: [lint]
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest]
         python: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7

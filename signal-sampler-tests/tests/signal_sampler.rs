@@ -62,7 +62,9 @@ fn check(py: Python<'_>, signal_timer: SignalTimer) {
                 .map(|sample| sample.traces.len())
                 .sum();
             assert_eq!(traces, 0);
-            sampler.thread_created(signal_timer::gettid()).unwrap();
+            sampler
+                .thread_created(py_spy::signal_sampler::timer::gettid())
+                .unwrap();
         }
         py.run(SPIN, Some(&globals), None).unwrap();
 
@@ -89,6 +91,6 @@ fn check(py: Python<'_>, signal_timer: SignalTimer) {
             spins >= 50,
             "{signal_timer:?}: {spins} spin samples of {samples}"
         );
-        sampler.thread_removed(signal_timer::gettid());
+        sampler.thread_removed(py_spy::signal_sampler::timer::gettid());
     }
 }

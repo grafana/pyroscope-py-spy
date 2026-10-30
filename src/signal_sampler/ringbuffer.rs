@@ -5,11 +5,6 @@
 //! Both sides take a try-lock, so a nested or concurrent signal handler fails to get a
 //! [`Producer`] instead of corrupting the buffer.
 
-#![no_std]
-
-#[cfg(not(target_has_atomic = "ptr"))]
-compile_error!("signal-ringbuffer needs lock-free pointer-sized atomics");
-
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

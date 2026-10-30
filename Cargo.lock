@@ -1004,6 +1004,8 @@ dependencies = [
  "goblin",
  "indicatif",
  "inferno",
+ "kindasafe",
+ "kindasafe_init",
  "lazy_static",
  "libc",
  "log",
@@ -1020,9 +1022,6 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "signal-ringbuffer",
- "signal-timer",
- "signal-unwind",
  "tempfile",
  "termios",
  "winapi",
@@ -1364,39 +1363,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
-name = "signal-ringbuffer"
-version = "0.1.0"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "signal-sampler-tests"
 version = "0.1.0"
 dependencies = [
  "libc",
  "py-spy",
  "pyo3",
- "signal-timer",
-]
-
-[[package]]
-name = "signal-timer"
-version = "0.1.0"
-dependencies = [
- "libc",
-]
-
-[[package]]
-name = "signal-unwind"
-version = "0.1.0"
-dependencies = [
- "kindasafe",
- "kindasafe_init",
- "libc",
- "pyo3",
- "signal-ringbuffer",
- "signal-timer",
 ]
 
 [[package]]

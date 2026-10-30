@@ -410,7 +410,7 @@ impl PythonSpy {
     ))]
     pub(crate) fn resolve_signal_stack(
         &mut self,
-        frames: &[signal_unwind::Frame],
+        frames: &[crate::signal_sampler::unwind::Frame],
     ) -> Result<StackTrace, Error> {
         let mut frames = match (self.version.major, self.version.minor) {
             (3, 11) => self.resolve_signal_frames::<v3_11_0::_PyInterpreterFrame>(frames),
@@ -444,7 +444,7 @@ impl PythonSpy {
     ))]
     fn resolve_signal_frames<F: FrameObject>(
         &self,
-        frames: &[signal_unwind::Frame],
+        frames: &[crate::signal_sampler::unwind::Frame],
     ) -> Result<Vec<crate::stack_trace::Frame>, Error> {
         let raw: Vec<RawFrame> = frames
             .iter()

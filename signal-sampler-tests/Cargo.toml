@@ -10,4 +10,3 @@ publish = false
 libc = "0.2"
 py-spy = { path = "..", default-features = false }
 pyo3 = { version = "0.30", features = ["auto-initialize"] }
-signal-timer = { path = "../signal-timer" }

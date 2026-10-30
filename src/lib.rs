@@ -50,7 +50,8 @@ pub mod sampler;
     any(target_os = "linux", target_os = "macos"),
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-mod signal_sampler;
+#[doc(hidden)]
+pub mod signal_sampler;
 pub mod stack_trace;
 pub mod timer;
 mod utils;

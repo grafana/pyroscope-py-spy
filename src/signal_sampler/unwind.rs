@@ -1,5 +1,5 @@
 //! Walks the CPython frame chain of a thread from a signal handler and writes it into a
-//! [`signal_ringbuffer`] record. No allocation, no locks, no recursion, no buffers.
+//! [`ringbuffer`](super::ringbuffer) record. No allocation, no locks, no recursion, no buffers.
 //!
 //! The handler records only code object addresses. Names are resolved later on a normal thread,
 //! which must check the code object is still alive. Line numbers are not recorded.
@@ -8,37 +8,14 @@
 //!
 //! Supports CPython 3.11 to 3.14, default (GIL) build, 64-bit targets.
 
-#![cfg_attr(not(test), no_std)]
-
-#[cfg(not(target_pointer_width = "64"))]
-compile_error!("signal-unwind supports only 64-bit targets");
-
-#[cfg(test)]
-#[allow(clippy::all, unused_imports, unnecessary_transmutes)]
-#[path = "../../src/python_bindings/v3_14_0.rs"]
-mod v3_14_0;
-
-#[cfg(test)]
-#[allow(clippy::all, unused_imports, unnecessary_transmutes)]
-#[path = "../../src/python_bindings/v3_11_0.rs"]
-mod v3_11_0;
-#[cfg(test)]
-#[allow(clippy::all, unused_imports, unnecessary_transmutes)]
-#[path = "../../src/python_bindings/v3_12_0.rs"]
-mod v3_12_0;
-#[cfg(test)]
-#[allow(clippy::all, unused_imports, unnecessary_transmutes)]
-#[path = "../../src/python_bindings/v3_13_0.rs"]
-mod v3_13_0;
-
 pub mod handler;
 mod layout;
 
-pub use kindasafe_init::{init, InitError};
+pub use kindasafe_init::init;
 pub use layout::{Layout, V3_11, V3_12, V3_13, V3_14};
 
+use super::ringbuffer::Record;
 use core::marker::PhantomData;
-use signal_ringbuffer::Record;
 
 const OB_TYPE: usize = 8;
 const WORD: usize = size_of::<usize>();

@@ -26,6 +26,8 @@ mod sampler;
     any(target_os = "linux", target_os = "macos"),
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
+// signal-sampler-tests uses the rest through the library.
+#[allow(dead_code)]
 mod signal_sampler;
 mod speedscope;
 mod stack_trace;

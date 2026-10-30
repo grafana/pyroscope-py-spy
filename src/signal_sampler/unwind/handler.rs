@@ -3,10 +3,10 @@
 //! [`configure`] once, install [`handler`] for the running CPython's layout, and drain with
 //! [`consumer`]. Each record is the frames of the interrupted thread, innermost first.
 
-use crate::{Frame, Layout, Unwinder};
+use super::{Frame, Layout, Unwinder};
+use crate::signal_sampler::ringbuffer::{Consumer, Record, RingBuffer};
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use signal_ringbuffer::{Consumer, Record, RingBuffer};
 
 const SLOTS: usize = 1 << 16;
 

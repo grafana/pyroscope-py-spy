@@ -71,20 +71,20 @@ mod tests {
 
     macro_rules! frame_checks {
         ($l:ty, $v:ident, $executable:ident, $owner:expr) => {{
-            use crate::$v as v;
+            use crate::python_bindings::$v as v;
             assert_eq!(
                 <$l>::EXECUTABLE,
                 offset_of!(v::_PyInterpreterFrame, $executable)
             );
             assert_eq!(<$l>::PREVIOUS, offset_of!(v::_PyInterpreterFrame, previous));
             assert_eq!(<$l>::OWNER, $owner);
-            assert_eq!(crate::OB_TYPE, offset_of!(v::PyObject, ob_type));
+            assert_eq!(super::super::OB_TYPE, offset_of!(v::PyObject, ob_type));
         }};
     }
 
     #[test]
     fn v3_11_matches_bindings() {
-        use crate::v3_11_0 as v;
+        use crate::python_bindings::v3_11_0 as v;
         frame_checks!(V3_11, v3_11_0, f_code, None);
         assert_eq!(V3_11::THREAD_FRAME, offset_of!(v::PyThreadState, cframe));
         assert_eq!(
@@ -95,7 +95,7 @@ mod tests {
 
     #[test]
     fn v3_12_matches_bindings() {
-        use crate::v3_12_0 as v;
+        use crate::python_bindings::v3_12_0 as v;
         frame_checks!(
             V3_12,
             v3_12_0,
@@ -115,7 +115,7 @@ mod tests {
 
     #[test]
     fn v3_13_matches_bindings() {
-        use crate::v3_13_0 as v;
+        use crate::python_bindings::v3_13_0 as v;
         frame_checks!(
             V3_13,
             v3_13_0,
@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn v3_14_matches_bindings() {
-        use crate::v3_14_0 as v;
+        use crate::python_bindings::v3_14_0 as v;
         frame_checks!(
             V3_14,
             v3_14_0,

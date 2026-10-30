@@ -3,7 +3,7 @@
 mod common;
 
 use common::{burn_cpu, serial};
-use signal_timer::{c_int, gettid, siginfo_t, Mode, SignalHandler, Timer};
+use py_spy::signal_sampler::timer::{c_int, gettid, siginfo_t, Mode, SignalHandler, Timer};
 use std::ffi::c_void;
 use std::io;
 use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};

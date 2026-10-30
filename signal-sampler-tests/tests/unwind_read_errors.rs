@@ -1,11 +1,11 @@
-use signal_ringbuffer::RingBuffer;
-use signal_unwind::{Error, Frame, Unwinder, V3_14};
+use py_spy::signal_sampler::ringbuffer::RingBuffer;
+use py_spy::signal_sampler::unwind::{Error, Frame, Unwinder, V3_14};
 
 static RB: RingBuffer<Frame, 16> = RingBuffer::new();
 
 #[test]
 fn unreadable_address_fails_and_keeps_errno() {
-    signal_unwind::init().unwrap();
+    py_spy::signal_sampler::unwind::init().unwrap();
     let unwinder = Unwinder::<V3_14>::new(0, 8);
     let mut p = RB.producer().unwrap();
     let mut record = p.record();

@@ -1,6 +1,6 @@
 //! Samples the current process by unwinding python stacks inside a `SIGPROF` handler.
 //!
-//! The handlers live in [`signal_unwind::handler`]. They record code object addresses into a
+//! The handlers live in [`unwind::handler`]. They record code object addresses into a
 //! ring buffer. A normal thread drains it and resolves names, tolerating code objects that were
 //! freed in the meantime. A tick interrupts one running thread, so only threads on the CPU are
 //! sampled.
@@ -10,14 +10,21 @@ use std::time::Duration;
 
 use anyhow::Error;
 use remoteprocess::Pid;
-use signal_ringbuffer::PopError;
-use signal_timer::{Mode, SignalHandler, Timer};
-use signal_unwind::handler::{self, Handler, ThreadStateGetter};
-use signal_unwind::{Frame, V3_11, V3_12, V3_13, V3_14};
 
 use crate::config::SignalTimer;
 use crate::python_spy::PythonSpy;
 use crate::stack_trace::StackTrace;
+use ringbuffer::PopError;
+use timer::{Mode, SignalHandler, Timer};
+use unwind::handler::{self, Handler, ThreadStateGetter};
+use unwind::{Frame, V3_11, V3_12, V3_13, V3_14};
+
+#[doc(hidden)]
+pub mod ringbuffer;
+#[doc(hidden)]
+pub mod timer;
+#[doc(hidden)]
+pub mod unwind;
 
 const MAX_FRAMES: usize = 4096;
 
@@ -75,7 +82,7 @@ impl SignalHandlerSession {
                 "unwinding in the signal handler works only for the current process"
             ));
         }
-        signal_unwind::init()
+        unwind::init()
             .map_err(|e| format_err!("failed to install memory fault handlers: {:?}", e))?;
         let code_type = lookup(c"PyCode_Type")?;
         handler::configure(code_type, lookup_thread_state_getter()?, MAX_FRAMES);
@@ -143,7 +150,7 @@ impl Drop for SignalHandlerSession {
 }
 
 /// Starts sampling `tid` if the session runs in [`Mode::CTimer`]. Does nothing otherwise.
-pub fn thread_created(timer: &SharedTimer, tid: signal_timer::pid_t) -> Result<(), Error> {
+pub fn thread_created(timer: &SharedTimer, tid: timer::pid_t) -> Result<(), Error> {
     match timer.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         Some(timer) => Ok(timer.thread_created(tid)?),
         None => Ok(()),
@@ -151,7 +158,7 @@ pub fn thread_created(timer: &SharedTimer, tid: signal_timer::pid_t) -> Result<(
 }
 
 /// Stops sampling `tid`. Does nothing if the session ended or runs in [`Mode::ITimer`].
-pub fn thread_removed(timer: &SharedTimer, tid: signal_timer::pid_t) {
+pub fn thread_removed(timer: &SharedTimer, tid: timer::pid_t) {
     if let Some(timer) = timer.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         timer.thread_removed(tid);
     }

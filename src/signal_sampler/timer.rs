@@ -4,9 +4,6 @@
 //! [`Mode::CTimer`] (Linux only) uses one `timer_create` timer per thread on that thread's CPU clock,
 //! delivered to that thread.
 
-#[cfg(not(unix))]
-compile_error!("signal-timer supports only unix targets");
-
 #[cfg(target_os = "linux")]
 mod ctimer;
 mod itimer;
