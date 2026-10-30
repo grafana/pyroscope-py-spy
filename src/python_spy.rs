@@ -17,21 +17,11 @@ use crate::python_bindings::{
     v3_8_0, v3_9_5,
 };
 use crate::python_data_access::format_variable;
-#[cfg(all(
-    any(target_os = "linux", target_os = "macos"),
-    any(target_arch = "x86_64", target_arch = "aarch64")
-))]
-use crate::python_interpreters::FrameObject;
 use crate::python_interpreters::{InterpreterState, ThreadState};
-#[cfg(all(
-    any(target_os = "linux", target_os = "macos"),
-    any(target_arch = "x86_64", target_arch = "aarch64")
-))]
-use crate::python_process_info::TypeChecks;
 use crate::python_process_info::{get_python_version, PythonProcessInfo, PythonProcessLayout};
 use crate::python_threading::thread_name_lookup;
 use crate::stack_trace::{
-    get_gil_threadid, resolve_frames, unwind_frames, RawFrame, RawThread, StackTrace, UnwindBuffers,
+    get_gil_threadid, resolve_frames, unwind_frames, RawThread, StackTrace, UnwindBuffers,
 };
 use crate::version::Version;
 
@@ -400,71 +390,6 @@ impl PythonSpy {
         Ok(traces)
     }
 
-    /// Builds the stack trace of a thread from frames recorded by a signal handler. Whether the
-    /// thread holds the GIL is unknown, so `owns_gil` is false and `gil_only` does not apply.
-    /// Line numbers and thread ids are not recorded, so every frame has line 0 and the thread id
-    /// is 0 with no thread name.
-    #[cfg(all(
-        any(target_os = "linux", target_os = "macos"),
-        any(target_arch = "x86_64", target_arch = "aarch64")
-    ))]
-    pub(crate) fn resolve_signal_stack(
-        &mut self,
-        frames: &[crate::signal_sampler::unwind::Frame],
-    ) -> Result<StackTrace, Error> {
-        let mut frames = match (self.version.major, self.version.minor) {
-            (3, 11) => self.resolve_signal_frames::<v3_11_0::_PyInterpreterFrame>(frames),
-            (3, 12) => self.resolve_signal_frames::<v3_12_0::_PyInterpreterFrame>(frames),
-            (3, 13) => self.resolve_signal_frames::<v3_13_0::_PyInterpreterFrame>(frames),
-            (3, 14) => self.resolve_signal_frames::<v3_14_0::_PyInterpreterFrame>(frames),
-            _ => Err(format_err!(
-                "Unsupported version of Python: {}",
-                self.version
-            )),
-        }
-        .context("Failed to resolve frames")?;
-        for frame in &mut frames {
-            frame.short_filename = self.shorten_filename(&frame.filename);
-        }
-        Ok(StackTrace {
-            pid: self.process.pid,
-            thread_id: 0,
-            thread_name: None,
-            os_thread_id: None,
-            active: true,
-            owns_gil: false,
-            frames,
-            process_info: None,
-        })
-    }
-
-    #[cfg(all(
-        any(target_os = "linux", target_os = "macos"),
-        any(target_arch = "x86_64", target_arch = "aarch64")
-    ))]
-    fn resolve_signal_frames<F: FrameObject>(
-        &self,
-        frames: &[crate::signal_sampler::unwind::Frame],
-    ) -> Result<Vec<crate::stack_trace::Frame>, Error> {
-        let raw: Vec<RawFrame> = frames
-            .iter()
-            .map(|f| RawFrame {
-                frame: 0,
-                code: f.code,
-                lasti: 0,
-                is_entry: false,
-                is_shim_entry: false,
-            })
-            .collect();
-        resolve_frames::<F, Process>(
-            &raw,
-            &self.process,
-            false,
-            crate::config::LineNo::NoLine,
-            &TypeChecks::Disabled,
-        )
-    }
-
     // heuristic fallback for determining if a thread is active, used
     // when we don't have the ability to get the thread information from the OS
     fn _heuristic_is_thread_idle(&self, trace: &StackTrace) -> bool {
@@ -689,7 +614,7 @@ impl PythonSpy {
     /// We want to display filenames without the boilerplate of the python installation
     /// directory etc. This function looks only includes paths inside a python
     /// package or subpackage, and not the path the package is installed at
-    fn shorten_filename(&mut self, filename: &str) -> Option<String> {
+    pub(crate) fn shorten_filename(&mut self, filename: &str) -> Option<String> {
         // if the user requested full filenames, skip shortening
         if self.config.full_filenames {
             return Some(filename.to_string());

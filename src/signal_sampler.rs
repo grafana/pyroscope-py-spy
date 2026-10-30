@@ -8,12 +8,15 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::Error;
-use remoteprocess::Pid;
+use anyhow::{Context, Error};
+use remoteprocess::{Pid, Process};
 
-use crate::config::SignalTimer;
+use crate::config::{LineNo, SignalTimer};
+use crate::python_bindings::{v3_11_0, v3_12_0, v3_13_0, v3_14_0};
+use crate::python_interpreters::FrameObject;
+use crate::python_process_info::TypeChecks;
 use crate::python_spy::PythonSpy;
-use crate::stack_trace::StackTrace;
+use crate::stack_trace::{resolve_frames, RawFrame, StackTrace};
 use ringbuffer::PopError;
 use timer::{Mode, SignalHandler, Timer};
 use unwind::handler::{self, Handler, ThreadStateGetter};
@@ -128,7 +131,7 @@ impl SignalHandlerSession {
                 Err(PopError::Empty) => break,
                 Err(PopError::TooSmall { .. }) => unreachable!("buffer fits MAX_FRAMES"),
             };
-            match spy.resolve_signal_stack(&self.buf[..n]) {
+            match resolve_signal_stack(spy, &self.buf[..n]) {
                 Ok(trace) => traces.push(trace),
                 Err(e) => errors.push((spy.pid, e)),
             }
@@ -139,6 +142,60 @@ impl SignalHandlerSession {
         }
         (traces, errors)
     }
+}
+
+/// Builds the stack trace of a thread from frames recorded by a signal handler. Whether the
+/// thread holds the GIL is unknown, so `owns_gil` is false and `gil_only` does not apply.
+/// Line numbers and thread ids are not recorded, so every frame has line 0 and the thread id
+/// is 0 with no thread name.
+fn resolve_signal_stack(spy: &mut PythonSpy, frames: &[Frame]) -> Result<StackTrace, Error> {
+    let mut frames = match (spy.version.major, spy.version.minor) {
+        (3, 11) => resolve_signal_frames::<v3_11_0::_PyInterpreterFrame>(spy, frames),
+        (3, 12) => resolve_signal_frames::<v3_12_0::_PyInterpreterFrame>(spy, frames),
+        (3, 13) => resolve_signal_frames::<v3_13_0::_PyInterpreterFrame>(spy, frames),
+        (3, 14) => resolve_signal_frames::<v3_14_0::_PyInterpreterFrame>(spy, frames),
+        _ => Err(format_err!(
+            "Unsupported version of Python: {}",
+            spy.version
+        )),
+    }
+    .context("Failed to resolve frames")?;
+    for frame in &mut frames {
+        frame.short_filename = spy.shorten_filename(&frame.filename);
+    }
+    Ok(StackTrace {
+        pid: spy.process.pid,
+        thread_id: 0,
+        thread_name: None,
+        os_thread_id: None,
+        active: true,
+        owns_gil: false,
+        frames,
+        process_info: None,
+    })
+}
+
+fn resolve_signal_frames<F: FrameObject>(
+    spy: &PythonSpy,
+    frames: &[Frame],
+) -> Result<Vec<crate::stack_trace::Frame>, Error> {
+    let raw: Vec<RawFrame> = frames
+        .iter()
+        .map(|f| RawFrame {
+            frame: 0,
+            code: f.code,
+            lasti: 0,
+            is_entry: false,
+            is_shim_entry: false,
+        })
+        .collect();
+    resolve_frames::<F, Process>(
+        &raw,
+        &spy.process,
+        false,
+        LineNo::NoLine,
+        &TypeChecks::Disabled,
+    )
 }
 
 impl Drop for SignalHandlerSession {
