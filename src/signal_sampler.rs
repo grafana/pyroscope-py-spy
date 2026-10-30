@@ -147,22 +147,20 @@ impl SignalHandlerSession {
 /// Line numbers and thread ids are not recorded, so every frame has line 0 and the thread id
 /// is 0 with no thread name.
 fn resolve_signal_stack(spy: &mut PythonSpy, frames: &[Frame]) -> Result<StackTrace, Error> {
-    let mut frames = match (spy.version.major, spy.version.minor) {
-        (3, 11) => resolve_signal_frames::<v3_11_0::_PyInterpreterFrame>(spy, frames),
-        (3, 12) => resolve_signal_frames::<v3_12_0::_PyInterpreterFrame>(spy, frames),
-        (3, 13) => resolve_signal_frames::<v3_13_0::_PyInterpreterFrame>(spy, frames),
-        (3, 14) => resolve_signal_frames::<v3_14_0::_PyInterpreterFrame>(spy, frames),
+    let (process, checks) = (&spy.process, &spy.addresses.type_checks);
+    let frames = match (spy.version.major, spy.version.minor) {
+        (3, 11) => resolve_signal_frames::<v3_11_0::_PyInterpreterFrame>(process, frames, checks),
+        (3, 12) => resolve_signal_frames::<v3_12_0::_PyInterpreterFrame>(process, frames, checks),
+        (3, 13) => resolve_signal_frames::<v3_13_0::_PyInterpreterFrame>(process, frames, checks),
+        (3, 14) => resolve_signal_frames::<v3_14_0::_PyInterpreterFrame>(process, frames, checks),
         _ => Err(format_err!(
             "Unsupported version of Python: {}",
             spy.version
         )),
     }
     .context("Failed to resolve frames")?;
-    for frame in &mut frames {
-        frame.short_filename = spy.shorten_filename(&frame.filename);
-    }
     Ok(StackTrace {
-        pid: spy.process.pid,
+        pid: 0,
         thread_id: 0,
         thread_name: None,
         os_thread_id: None,
@@ -174,8 +172,9 @@ fn resolve_signal_stack(spy: &mut PythonSpy, frames: &[Frame]) -> Result<StackTr
 }
 
 fn resolve_signal_frames<F: FrameObject>(
-    spy: &PythonSpy,
+    process: &Process,
     frames: &[Frame],
+    type_checks: &TypeChecks,
 ) -> Result<Vec<crate::stack_trace::Frame>, Error> {
     let raw: Vec<RawFrame> = frames
         .iter()
@@ -187,13 +186,7 @@ fn resolve_signal_frames<F: FrameObject>(
             is_shim_entry: false,
         })
         .collect();
-    resolve_frames::<F, Process>(
-        &raw,
-        &spy.process,
-        false,
-        LineNo::NoLine,
-        &TypeChecks::Disabled,
-    )
+    resolve_frames::<F, Process>(&raw, process, false, LineNo::NoLine, type_checks)
 }
 
 impl Drop for SignalHandlerSession {

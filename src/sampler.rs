@@ -111,8 +111,8 @@ impl Sampler {
             }
 
             loop {
-                thread::sleep(Duration::from_millis(10));
-                let (traces, errors) = session.drain(&mut spy);
+                thread::sleep(Duration::from_millis(10)); //todo do not wake up on every 10ms, notify from producer when buf is half full
+                let (traces, errors) = session.drain(&mut spy); //todo do not build Vec<Stacktrace> - build incremental pprof
                 let sample = Sample {
                     traces,
                     sampling_errors: if errors.is_empty() {
