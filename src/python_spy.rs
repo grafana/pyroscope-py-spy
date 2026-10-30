@@ -403,8 +403,7 @@ impl PythonSpy {
     /// Builds the stack trace of a thread from frames recorded by a signal handler. Whether the
     /// thread holds the GIL is unknown, so `owns_gil` is false and `gil_only` does not apply.
     /// Line numbers and thread ids are not recorded, so every frame has line 0 and the thread id
-    /// is 0 with no thread name. The recorded code objects may have been freed since, so frames
-    /// whose object is not exactly of type `code_type` (`PyCode_Type`) are dropped.
+    /// is 0 with no thread name.
     #[cfg(all(
         any(target_os = "linux", target_os = "macos"),
         any(target_arch = "x86_64", target_arch = "aarch64")
@@ -412,21 +411,12 @@ impl PythonSpy {
     pub(crate) fn resolve_signal_stack(
         &mut self,
         frames: &[signal_unwind::Frame],
-        code_type: usize,
     ) -> Result<StackTrace, Error> {
         let mut frames = match (self.version.major, self.version.minor) {
-            (3, 11) => {
-                self.resolve_signal_frames::<v3_11_0::_PyInterpreterFrame>(frames, code_type)
-            }
-            (3, 12) => {
-                self.resolve_signal_frames::<v3_12_0::_PyInterpreterFrame>(frames, code_type)
-            }
-            (3, 13) => {
-                self.resolve_signal_frames::<v3_13_0::_PyInterpreterFrame>(frames, code_type)
-            }
-            (3, 14) => {
-                self.resolve_signal_frames::<v3_14_0::_PyInterpreterFrame>(frames, code_type)
-            }
+            (3, 11) => self.resolve_signal_frames::<v3_11_0::_PyInterpreterFrame>(frames),
+            (3, 12) => self.resolve_signal_frames::<v3_12_0::_PyInterpreterFrame>(frames),
+            (3, 13) => self.resolve_signal_frames::<v3_13_0::_PyInterpreterFrame>(frames),
+            (3, 14) => self.resolve_signal_frames::<v3_14_0::_PyInterpreterFrame>(frames),
             _ => Err(format_err!(
                 "Unsupported version of Python: {}",
                 self.version
@@ -455,17 +445,9 @@ impl PythonSpy {
     fn resolve_signal_frames<F: FrameObject>(
         &self,
         frames: &[signal_unwind::Frame],
-        code_type: usize,
     ) -> Result<Vec<crate::stack_trace::Frame>, Error> {
-        // `ob_type` has this offset in every supported version.
-        let ob_type = std::mem::offset_of!(v3_14_0::PyObject, ob_type);
         let raw: Vec<RawFrame> = frames
             .iter()
-            .filter(|f| {
-                self.process
-                    .copy_struct::<usize>(f.code.wrapping_add(ob_type))
-                    .is_ok_and(|t| t == code_type)
-            })
             .map(|f| RawFrame {
                 frame: 0,
                 code: f.code,

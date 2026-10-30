@@ -56,7 +56,6 @@ pub struct SignalHandlerSession {
     // Dropped after the timer, see the `Drop` impl.
     _handler: SignalHandler,
     buf: Vec<Frame>,
-    code_type: usize,
 }
 
 impl SignalHandlerSession {
@@ -102,7 +101,6 @@ impl SignalHandlerSession {
             timer: Arc::new(Mutex::new(Some(timer))),
             _handler: signal_handler,
             buf,
-            code_type,
         })
     }
 
@@ -123,7 +121,7 @@ impl SignalHandlerSession {
                 Err(PopError::Empty) => break,
                 Err(PopError::TooSmall { .. }) => unreachable!("buffer fits MAX_FRAMES"),
             };
-            match spy.resolve_signal_stack(&self.buf[..n], self.code_type) {
+            match spy.resolve_signal_stack(&self.buf[..n]) {
                 Ok(trace) => traces.push(trace),
                 Err(e) => errors.push((spy.pid, e)),
             }
