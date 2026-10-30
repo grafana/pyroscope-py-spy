@@ -23,10 +23,10 @@ pub use libc::{c_int, pid_t, siginfo_t};
 
 pub type Handler = extern "C" fn(c_int, *mut siginfo_t, *mut c_void);
 
-/// Restores the previous action for the signal on drop.
+/// Ignores the signal on drop instead of restoring the previous action: a signal still pending
+/// from a stopped timer would terminate the process under the default action.
 pub struct SignalHandler {
     signal: c_int,
-    previous: libc::sigaction,
 }
 
 impl SignalHandler {
@@ -36,11 +36,10 @@ impl SignalHandler {
             action.sa_sigaction = handler as usize;
             action.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART;
             libc::sigemptyset(&mut action.sa_mask);
-            let mut previous: libc::sigaction = mem::zeroed();
-            if libc::sigaction(signal, &action, &mut previous) != 0 {
+            if libc::sigaction(signal, &action, std::ptr::null_mut()) != 0 {
                 return Err(io::Error::last_os_error());
             }
-            Ok(SignalHandler { signal, previous })
+            Ok(SignalHandler { signal })
         }
     }
 
@@ -51,7 +50,7 @@ impl SignalHandler {
 
 impl Drop for SignalHandler {
     fn drop(&mut self) {
-        unsafe { libc::sigaction(self.signal, &self.previous, std::ptr::null_mut()) };
+        unsafe { libc::signal(self.signal, libc::SIG_IGN) };
     }
 }
 

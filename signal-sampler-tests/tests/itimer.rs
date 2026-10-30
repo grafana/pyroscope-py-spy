@@ -103,7 +103,7 @@ fn current_handler(signal: c_int) -> libc::sighandler_t {
 }
 
 #[test]
-fn handler_drop_restores_previous() {
+fn handler_drop_ignores_signal() {
     let _serial = serial();
     assert_eq!(current_handler(libc::SIGUSR1), libc::SIG_DFL);
     let handler = SignalHandler::install(libc::SIGUSR1, on_signal).unwrap();
@@ -117,7 +117,7 @@ fn handler_drop_restores_previous() {
     assert_eq!(COUNT.load(Ordering::Relaxed), 1);
 
     drop(handler);
-    assert_eq!(current_handler(libc::SIGUSR1), libc::SIG_DFL);
+    assert_eq!(current_handler(libc::SIGUSR1), libc::SIG_IGN);
 }
 
 #[test]

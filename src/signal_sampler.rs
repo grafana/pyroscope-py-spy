@@ -198,8 +198,8 @@ fn resolve_signal_frames<F: FrameObject>(
 }
 
 impl Drop for SignalHandlerSession {
-    /// Stops the timers before the handler is restored: a tick with the default action would
-    /// terminate the process. Holding the lock keeps a concurrent hook from using a dead timer.
+    /// Stops the timers before the handler is removed. Holding the lock keeps a concurrent hook
+    /// from using a dead timer.
     fn drop(&mut self) {
         *self.timer.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
