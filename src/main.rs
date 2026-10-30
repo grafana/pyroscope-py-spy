@@ -22,6 +22,11 @@ mod python_process_info;
 mod python_spy;
 mod python_threading;
 mod sampler;
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod signal_sampler;
 mod speedscope;
 mod stack_trace;
 mod timer;

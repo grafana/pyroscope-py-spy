@@ -15,7 +15,7 @@ if [ -f build-artifacts.tar ]; then
   rm -f build-artifacts.tar
 fi
 
-cargo build --release --workspace --all-targets
+cargo build --release --all-targets
 
 # TODO: re-enable integration tests
 # cargo test --release

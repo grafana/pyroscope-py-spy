@@ -113,11 +113,11 @@ where
 }
 
 pub(crate) struct RawFrame {
-    frame: usize,
-    code: usize,
-    lasti: i32,
-    is_entry: bool,
-    is_shim_entry: bool,
+    pub frame: usize,
+    pub code: usize,
+    pub lasti: i32,
+    pub is_entry: bool,
+    pub is_shim_entry: bool,
 }
 
 pub(crate) struct RawThread {

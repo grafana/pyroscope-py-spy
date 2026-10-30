@@ -23,6 +23,17 @@ pub struct Config {
     #[doc(hidden)]
     pub type_checks: TypesConfig,
 
+    /// Whether or not to unwind python stacks inside a `SIGPROF` handler of the profiled process
+    /// instead of reading its memory from a sampling thread. Only works when sampling the
+    /// current process of CPython 3.11 to 3.14 on Linux or macOS, x86_64 or aarch64, and only
+    /// samples threads that are running on the CPU. `gil_only`, `lineno` and `type_checks` are
+    /// ignored: code objects are always checked to be exactly `PyCode_Type`, `owns_gil` is always
+    /// false, every line number is 0, and `thread_id` is 0 with no thread name.
+    pub unwind_in_signal_handler: bool,
+
+    /// The CPU-time timer that delivers the signal when `unwind_in_signal_handler` is set
+    pub signal_timer: SignalTimer,
+
     // The following config options only apply when using py-spy as an application
     #[doc(hidden)]
     pub command: String,
@@ -118,6 +129,18 @@ pub enum RecordDuration {
     Seconds(u64),
 }
 
+/// CPU-time timers that deliver `SIGPROF`
+#[derive(Debug, Clone, Eq, PartialEq, Copy)]
+pub enum SignalTimer {
+    /// One `setitimer(ITIMER_PROF)` timer for the process: each tick interrupts an arbitrary
+    /// running thread.
+    ITimer,
+    /// Linux only. One timer per thread on its CPU clock: every thread gets ticks in proportion to
+    /// the CPU time it uses. A thread is sampled only after `Sampler::thread_created` was called
+    /// for its OS thread id.
+    CTimer,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Copy)]
 pub enum LineNo {
     NoLine,
@@ -141,6 +164,8 @@ impl Default for Config {
             duration: RecordDuration::Unlimited,
             native: false,
             type_checks: TypesConfig::Disabled,
+            unwind_in_signal_handler: false,
+            signal_timer: SignalTimer::ITimer,
             gil_only: false,
             include_idle: false,
             include_thread_ids: false,

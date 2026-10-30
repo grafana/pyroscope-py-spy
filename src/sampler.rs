@@ -20,6 +20,12 @@ pub struct Sampler {
     pub version: Option<Version>,
     rx: Option<Receiver<Sample>>,
     sampling_thread: Option<thread::JoinHandle<()>>,
+    #[cfg(all(
+        any(target_os = "linux", target_os = "macos"),
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    #[allow(dead_code)] // used by the library, not by the binary
+    signal_timer: Option<crate::signal_sampler::SharedTimer>,
 }
 
 pub struct Sample {
@@ -29,12 +35,116 @@ pub struct Sample {
 }
 
 impl Sampler {
+    /// Tells a sampler with `Config::unwind_in_signal_handler` and `SignalTimer::CTimer` to start
+    /// sampling the thread with OS thread id `tid`, which must be called for every thread that
+    /// should be sampled, existing ones included. Does nothing for other samplers.
+    #[allow(dead_code)] // used by the library, not by the binary
+    pub fn thread_created(&self, tid: i32) -> Result<(), Error> {
+        #[cfg(all(
+            any(target_os = "linux", target_os = "macos"),
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ))]
+        if let Some(timer) = &self.signal_timer {
+            return crate::signal_sampler::thread_created(timer, tid);
+        }
+        let _ = tid;
+        Ok(())
+    }
+
+    /// Stops sampling the thread with OS thread id `tid`. Call it before the id can be reused.
+    #[allow(dead_code)] // used by the library, not by the binary
+    pub fn thread_removed(&self, tid: i32) {
+        #[cfg(all(
+            any(target_os = "linux", target_os = "macos"),
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ))]
+        if let Some(timer) = &self.signal_timer {
+            crate::signal_sampler::thread_removed(timer, tid);
+        }
+        let _ = tid;
+    }
+
     pub fn new(pid: Pid, config: &Config) -> Result<Sampler, Error> {
-        if config.subprocesses {
+        if config.unwind_in_signal_handler {
+            Self::new_signal_sampler(pid, config)
+        } else if config.subprocesses {
             Self::new_subprocess_sampler(pid, config)
         } else {
             Self::new_sampler(pid, config)
         }
+    }
+
+    /// Creates a sampler that unwinds python stacks in a signal handler of the current process
+    #[cfg(all(
+        any(target_os = "linux", target_os = "macos"),
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    fn new_signal_sampler(pid: Pid, config: &Config) -> Result<Sampler, Error> {
+        use crate::signal_sampler::{SharedTimer, SignalHandlerSession};
+
+        let (tx, rx): (Sender<Sample>, Receiver<Sample>) = mpsc::channel();
+        let (initialized_tx, initialized_rx): (
+            Sender<Result<(Version, SharedTimer), Error>>,
+            Receiver<Result<(Version, SharedTimer), Error>>,
+        ) = mpsc::channel();
+        let config = config.clone();
+        let sampling_thread = thread::spawn(move || {
+            let mut spy = match PythonSpy::retry_new(pid, &config, 20) {
+                Ok(spy) => spy,
+                Err(e) => {
+                    initialized_tx.send(Err(e)).unwrap();
+                    return;
+                }
+            };
+            let mut session = match SignalHandlerSession::start(&spy) {
+                Ok(session) => session,
+                Err(e) => {
+                    initialized_tx.send(Err(e)).unwrap();
+                    return;
+                }
+            };
+            if initialized_tx
+                .send(Ok((spy.version.clone(), session.timer())))
+                .is_err()
+            {
+                return;
+            }
+
+            loop {
+                thread::sleep(Duration::from_millis(10));
+                let (traces, errors) = session.drain(&mut spy);
+                let sample = Sample {
+                    traces,
+                    sampling_errors: if errors.is_empty() {
+                        None
+                    } else {
+                        Some(errors)
+                    },
+                    late: None,
+                };
+                if tx.send(sample).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let (version, timer) = initialized_rx.recv()??;
+        Ok(Sampler {
+            rx: Some(rx),
+            version: Some(version),
+            sampling_thread: Some(sampling_thread),
+            signal_timer: Some(timer),
+        })
+    }
+
+    #[cfg(not(all(
+        any(target_os = "linux", target_os = "macos"),
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )))]
+    fn new_signal_sampler(_pid: Pid, _config: &Config) -> Result<Sampler, Error> {
+        Err(format_err!(
+            "unwinding in the signal handler needs Linux or macOS on x86_64 or aarch64"
+        ))
     }
 
     /// Creates a new sampler object, reading from a single process only
@@ -98,6 +208,11 @@ impl Sampler {
             rx: Some(rx),
             version: Some(version),
             sampling_thread: Some(sampling_thread),
+            #[cfg(all(
+                any(target_os = "linux", target_os = "macos"),
+                any(target_arch = "x86_64", target_arch = "aarch64")
+            ))]
+            signal_timer: None,
         })
     }
 
@@ -247,6 +362,11 @@ impl Sampler {
             rx: Some(rx),
             version: None,
             sampling_thread: Some(sampling_thread),
+            #[cfg(all(
+                any(target_os = "linux", target_os = "macos"),
+                any(target_arch = "x86_64", target_arch = "aarch64")
+            ))]
+            signal_timer: None,
         })
     }
 }
