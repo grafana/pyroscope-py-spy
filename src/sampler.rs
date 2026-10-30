@@ -80,39 +80,25 @@ impl Sampler {
         any(target_arch = "x86_64", target_arch = "aarch64")
     ))]
     fn new_signal_sampler(pid: Pid, config: &Config) -> Result<Sampler, Error> {
-        use crate::signal_sampler::{SharedTimer, SignalHandlerSession};
+        use crate::signal_sampler::{PythonSpySend, SignalHandlerSession};
 
         let (tx, rx): (Sender<Sample>, Receiver<Sample>) = mpsc::channel();
-        let (initialized_tx, initialized_rx): (
-            Sender<Result<(Version, SharedTimer), Error>>,
-            Receiver<Result<(Version, SharedTimer), Error>>,
-        ) = mpsc::channel();
         let config = config.clone();
+        let spy = PythonSpy::retry_new(pid, &config, 20)?;
+        let spy = PythonSpySend {
+            pid,
+            process: spy.process,
+            version: spy.version,
+            addresses: spy.addresses,
+            config: spy.config,
+        };
+        let mut session = SignalHandlerSession::start(&spy)?;
+        let version = spy.version.clone();
+        let timer = session.timer();
         let sampling_thread = thread::spawn(move || {
-            let mut spy = match PythonSpy::retry_new(pid, &config, 20) {
-                Ok(spy) => spy,
-                Err(e) => {
-                    initialized_tx.send(Err(e)).unwrap();
-                    return;
-                }
-            };
-            let mut session = match SignalHandlerSession::start(&spy) {
-                Ok(session) => session,
-                Err(e) => {
-                    initialized_tx.send(Err(e)).unwrap();
-                    return;
-                }
-            };
-            if initialized_tx
-                .send(Ok((spy.version.clone(), session.timer())))
-                .is_err()
-            {
-                return;
-            }
-
             loop {
                 thread::sleep(Duration::from_millis(10)); //todo do not wake up on every 10ms, notify from producer when buf is half full
-                let (traces, errors) = session.drain(&mut spy); //todo do not build Vec<Stacktrace> - build incremental pprof
+                let (traces, errors) = session.drain(&spy); //todo do not build Vec<Stacktrace> - build incremental pprof
                 let sample = Sample {
                     traces,
                     sampling_errors: if errors.is_empty() {
@@ -128,7 +114,6 @@ impl Sampler {
             }
         });
 
-        let (version, timer) = initialized_rx.recv()??;
         Ok(Sampler {
             rx: Some(rx),
             version: Some(version),

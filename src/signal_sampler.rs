@@ -11,11 +11,10 @@ use std::time::Duration;
 use anyhow::{Context, Error};
 use remoteprocess::{Pid, Process};
 
-use crate::config::{LineNo, SignalTimer};
+use crate::config::{Config, LineNo, SignalTimer};
 use crate::python_bindings::{v3_11_0, v3_12_0, v3_13_0, v3_14_0};
 use crate::python_interpreters::FrameObject;
-use crate::python_process_info::TypeChecks;
-use crate::python_spy::PythonSpy;
+use crate::python_process_info::{PythonProcessLayout, TypeChecks};
 use crate::stack_trace::{resolve_frames, RawFrame, StackTrace};
 use crate::version::Version;
 use ringbuffer::PopError;
@@ -30,7 +29,15 @@ pub mod timer;
 #[doc(hidden)]
 pub mod unwind;
 
-const MAX_FRAMES: usize = 4096;
+const MAX_FRAMES: usize = 4096; //todo wtf
+
+pub struct PythonSpySend { // subset of PySpy so that we can send it
+    pub pid: Pid,
+    pub process: Process,
+    pub version: Version,
+    pub addresses: PythonProcessLayout,
+    pub config: Config,
+}
 
 fn lookup(name: &std::ffi::CStr) -> Result<usize, Error> {
     let addr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()) } as usize;
@@ -77,7 +84,7 @@ pub struct SignalHandlerSession {
 }
 
 impl SignalHandlerSession {
-    pub fn start(spy: &PythonSpy) -> Result<SignalHandlerSession, Error> {
+    pub fn start(spy: &PythonSpySend) -> Result<SignalHandlerSession, Error> {
         let configure = configure_for(&spy.version)?;
         if spy.pid != std::process::id() as Pid {
             return Err(format_err!(
@@ -121,7 +128,7 @@ impl SignalHandlerSession {
     }
 
     /// Resolves everything the handler recorded since the last call.
-    pub fn drain(&mut self, spy: &mut PythonSpy) -> (Vec<StackTrace>, Vec<(Pid, Error)>) {
+    pub fn drain(&mut self, spy: &PythonSpySend) -> (Vec<StackTrace>, Vec<(Pid, Error)>) {
         let mut traces = Vec::new();
         let mut errors = Vec::new();
         let Some(mut consumer) = handler::consumer() else {
@@ -146,7 +153,8 @@ impl SignalHandlerSession {
 /// thread holds the GIL is unknown, so `owns_gil` is false and `gil_only` does not apply.
 /// Line numbers and thread ids are not recorded, so every frame has line 0 and the thread id
 /// is 0 with no thread name.
-fn resolve_signal_stack(spy: &mut PythonSpy, frames: &[Frame]) -> Result<StackTrace, Error> {
+/// todo make this method generic, avoid version dispatch
+fn resolve_signal_stack(spy: &PythonSpySend, frames: &[Frame]) -> Result<StackTrace, Error> {
     let (process, checks) = (&spy.process, &spy.addresses.type_checks);
     let frames = match (spy.version.major, spy.version.minor) {
         (3, 11) => resolve_signal_frames::<v3_11_0::_PyInterpreterFrame>(process, frames, checks),
