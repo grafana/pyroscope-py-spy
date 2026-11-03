@@ -287,7 +287,7 @@ fn read_varint(index: &mut usize, table: &[u8]) -> Option<usize> {
         byte = table[*index];
         *index += 1;
         shift += 6;
-        ret += ((byte & 63) as usize) << shift;
+        ret = ret.checked_add(((byte & 63) as usize).checked_shl(shift)?)?;
     }
     Some(ret)
 }
@@ -341,7 +341,7 @@ macro_rules! CompactCodeObjectImpl {
             fn get_line_number(&self, lasti: i32, table: &[u8]) -> i32 {
                 // unpack compressed table format from python 3.11
                 // https://github.com/python/cpython/pull/91666/files
-                let lasti = lasti - offset_of(self, &self.co_code_adaptive) as i32;
+                let lasti = lasti.wrapping_sub(offset_of(self, &self.co_code_adaptive) as i32);
                 let mut line_number: i32 = self.first_lineno();
                 let mut bytecode_address: i32 = 0;
 
@@ -375,7 +375,7 @@ macro_rules! CompactCodeObjectImpl {
                             0
                         }
                     };
-                    line_number += line_delta as i32;
+                    line_number = line_number.wrapping_add(line_delta as i32);
                     if bytecode_address > lasti {
                         break;
                     }
@@ -954,35 +954,26 @@ impl CodeObject for v3_10_0::PyCodeObject {
         self.co_varnames as *mut Self::TupleObject
     }
     fn get_line_number(&self, lasti: i32, table: &[u8]) -> i32 {
-        // in Python 3.10 we need to double the lasti instruction value here (and no I don't know why)
-        // https://github.com/python/cpython/blob/7b88f63e1dd4006b1a08b9c9f087dd13449ecc76/Python/ceval.c#L5999
-        // Whereas in python versions up to 3.9 we didn't.
-        // https://github.com/python/cpython/blob/3.9/Python/ceval.c#L4713-L4714
-        let lasti = 2 * lasti as i32;
-
-        // unpack the line table. format is specified here:
+        // f_lasti counts code units; the table counts bytes. A -128 delta
+        // marks a range without a line, but still advances the byte offset.
         // https://github.com/python/cpython/blob/3.10/Objects/lnotab_notes.txt
-        let size = table.len();
-        let mut i = 0;
-        let mut line_number: i32 = self.first_lineno();
-        let mut bytecode_address: i32 = 0;
-        while (i + 1) < size {
-            let delta: u8 = table[i];
-            let line_delta: i8 = table[i + 1] as i8;
-            i += 2;
-
-            if line_delta == -128 {
-                continue;
+        if lasti < 0 {
+            return self.first_lineno();
+        }
+        let lasti = i64::from(lasti) * 2;
+        let mut line_number = self.first_lineno();
+        let mut bytecode_address = 0i64;
+        for entry in table.chunks_exact(2) {
+            bytecode_address += i64::from(entry[0]);
+            let line_delta = entry[1] as i8;
+            if line_delta != -128 {
+                line_number = line_number.wrapping_add(i32::from(line_delta));
             }
-
-            line_number += i32::from(line_delta);
-            bytecode_address += i32::from(delta);
             if bytecode_address > lasti {
-                break;
+                return if line_delta == -128 { 0 } else { line_number };
             }
         }
-
-        line_number
+        0
     }
 }
 
@@ -1124,6 +1115,43 @@ mod tests {
             ..Default::default()
         };
         assert!(code.qualname().is_some());
+    }
+
+    #[test]
+    fn test_py3_10_line_number_ranges() {
+        let code = v3_10_0::PyCodeObject::default();
+        // Long ranges, a range without a line, an empty range encoding a large
+        // positive delta, and a backwards line jump (CPython's documented example).
+        let table = [
+            6, 1, 44, 1, 254, 5, 46, 0, 10, 128, 16, 1, 0, 127, 4, 73, 2, 255,
+        ];
+        for (start, end, line) in [
+            (0, 6, 1),
+            (6, 50, 2),
+            (50, 350, 7),
+            (350, 360, 0),
+            (360, 376, 8),
+            (376, 380, 208),
+            (380, 382, 207),
+        ] {
+            for byte in (start..end).step_by(2) {
+                assert_eq!(code.get_line_number(byte / 2, &table), line, "byte {byte}");
+            }
+        }
+        let code = v3_10_0::PyCodeObject {
+            co_firstlineno: 12,
+            ..Default::default()
+        };
+        assert_eq!(code.get_line_number(-1, &table), 12);
+        assert_eq!(code.get_line_number(0, &[]), 0);
+        assert_eq!(code.get_line_number(0, &[2]), 0);
+    }
+
+    #[test]
+    fn test_malformed_line_varints() {
+        assert_eq!(read_varint(&mut 0, &[]), None);
+        assert_eq!(read_varint(&mut 0, &[64]), None);
+        assert_eq!(read_varint(&mut 0, &[127; 32]), None);
     }
 
     #[test]
