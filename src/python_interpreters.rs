@@ -287,7 +287,12 @@ fn read_varint(index: &mut usize, table: &[u8]) -> Option<usize> {
         byte = table[*index];
         *index += 1;
         shift += 6;
-        ret = ret.checked_add(((byte & 63) as usize).checked_shl(shift)?)?;
+        let part = (byte & 63) as usize;
+        // checked_shl alone checks the shift count, not bits shifted out.
+        if part > usize::MAX.checked_shr(shift)? {
+            return None;
+        }
+        ret = ret.checked_add(part << shift)?;
     }
     Some(ret)
 }
@@ -341,7 +346,10 @@ macro_rules! CompactCodeObjectImpl {
             fn get_line_number(&self, lasti: i32, table: &[u8]) -> i32 {
                 // unpack compressed table format from python 3.11
                 // https://github.com/python/cpython/pull/91666/files
-                let lasti = lasti.wrapping_sub(offset_of(self, &self.co_code_adaptive) as i32);
+                let Some(lasti) = lasti.checked_sub(offset_of(self, &self.co_code_adaptive) as i32)
+                else {
+                    return 0;
+                };
                 let mut line_number: i32 = self.first_lineno();
                 let mut bytecode_address: i32 = 0;
 
@@ -359,13 +367,23 @@ macro_rules! CompactCodeObjectImpl {
                     let line_delta = match code {
                         15 => 0,
                         14 => {
-                            let delta = read_signed_varint(&mut index, table).unwrap_or(0);
-                            read_varint(&mut index, table); // end line
-                            read_varint(&mut index, table); // start column
-                            read_varint(&mut index, table); // end column
+                            let Some(delta) = read_signed_varint(&mut index, table) else {
+                                return 0;
+                            };
+                            for _ in 0..3 {
+                                // end line, start column, end column
+                                if read_varint(&mut index, table).is_none() {
+                                    return 0;
+                                }
+                            }
                             delta
                         }
-                        13 => read_signed_varint(&mut index, table).unwrap_or(0),
+                        13 => {
+                            let Some(delta) = read_signed_varint(&mut index, table) else {
+                                return 0;
+                            };
+                            delta
+                        }
                         10..=12 => {
                             index += 2; // start column / end column
                             (code - 10).into()
@@ -375,7 +393,16 @@ macro_rules! CompactCodeObjectImpl {
                             0
                         }
                     };
-                    line_number = line_number.wrapping_add(line_delta as i32);
+                    if index > table.len() {
+                        return 0;
+                    }
+                    let Ok(line_delta) = i32::try_from(line_delta) else {
+                        return 0;
+                    };
+                    let Some(line) = line_number.checked_add(line_delta) else {
+                        return 0;
+                    };
+                    line_number = line;
                     if bytecode_address > lasti {
                         break;
                     }
@@ -967,7 +994,10 @@ impl CodeObject for v3_10_0::PyCodeObject {
             bytecode_address += i64::from(entry[0]);
             let line_delta = entry[1] as i8;
             if line_delta != -128 {
-                line_number = line_number.wrapping_add(i32::from(line_delta));
+                let Some(line) = line_number.checked_add(i32::from(line_delta)) else {
+                    return 0;
+                };
+                line_number = line;
             }
             if bytecode_address > lasti {
                 return if line_delta == -128 { 0 } else { line_number };
@@ -1152,6 +1182,45 @@ mod tests {
         assert_eq!(read_varint(&mut 0, &[]), None);
         assert_eq!(read_varint(&mut 0, &[64]), None);
         assert_eq!(read_varint(&mut 0, &[127; 32]), None);
+
+        let mut maximum = vec![127; usize::BITS.div_ceil(6) as usize];
+        let last_bits = usize::BITS - 6 * (maximum.len() as u32 - 1);
+        *maximum.last_mut().unwrap() = (1 << last_bits) - 1;
+        assert_eq!(read_varint(&mut 0, &maximum), Some(usize::MAX));
+        *maximum.last_mut().unwrap() = 1 << last_bits;
+        assert_eq!(read_varint(&mut 0, &maximum), None);
+    }
+
+    #[test]
+    fn test_line_number_overflow_is_unknown() {
+        for (first, table) in [(i32::MAX, [2, 1]), (i32::MIN, [2, 255])] {
+            let code = v3_10_0::PyCodeObject {
+                co_firstlineno: first,
+                ..Default::default()
+            };
+            assert_eq!(code.get_line_number(0, &table), 0);
+        }
+        let offset = std::mem::offset_of!(v3_11_0::PyCodeObject, co_code_adaptive) as i32;
+        for (first, delta) in [(i32::MAX, 2), (i32::MIN, 3)] {
+            let code = v3_11_0::PyCodeObject {
+                co_firstlineno: first,
+                ..Default::default()
+            };
+            assert_eq!(code.get_line_number(offset, &[0xe8, delta]), 0);
+        }
+        let code = v3_11_0::PyCodeObject {
+            co_firstlineno: 42,
+            ..Default::default()
+        };
+        assert_eq!(code.get_line_number(i32::MIN, &[]), 0);
+        // The encoded positive line delta is 2^31, which cannot fit an i32.
+        assert_eq!(
+            code.get_line_number(offset, &[0xe8, 64, 64, 64, 64, 64, 4]),
+            0
+        );
+        assert_eq!(code.get_line_number(offset, &[0xe8, 64]), 0);
+        assert_eq!(code.get_line_number(offset, &[0xf0, 0]), 0);
+        assert_eq!(code.get_line_number(offset, &[0xd8]), 0);
     }
 
     #[test]
