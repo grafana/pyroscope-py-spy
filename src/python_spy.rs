@@ -7,8 +7,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Error, Result};
-use remoteprocess::{Pid, Process, ProcessMemory, Tid};
+use remoteprocess::{Pid, ProcessMemory, Tid};
 
+use crate::asan::{self, Process};
 use crate::config::{Config, LockingStrategy};
 #[cfg(feature = "unwind")]
 use crate::native_stack_trace::NativeStack;
@@ -79,7 +80,7 @@ impl PythonSpy {
 
         Ok(PythonSpy {
             pid,
-            process,
+            process: asan::wrap(process),
             version,
             addresses,
             #[cfg(feature = "unwind")]
