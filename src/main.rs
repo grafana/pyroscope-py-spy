@@ -3,7 +3,6 @@ extern crate anyhow;
 #[macro_use]
 extern crate log;
 
-mod asan;
 mod binary_parser;
 mod chrometrace;
 mod config;

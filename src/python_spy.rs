@@ -7,9 +7,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Error, Result};
-use remoteprocess::{Pid, ProcessMemory, Tid};
+use remoteprocess::{Pid, Process, ProcessMemory, Tid};
 
-use crate::asan::{self, PyroscopeSpyProcess};
 use crate::config::{Config, LockingStrategy};
 #[cfg(feature = "unwind")]
 use crate::native_stack_trace::NativeStack;
@@ -29,7 +28,7 @@ use crate::version::Version;
 /// Lets you retrieve stack traces of a running python program
 pub struct PythonSpy {
     pub pid: Pid,
-    pub process: PyroscopeSpyProcess,
+    pub process: Process,
     pub version: Version,
     pub addresses: PythonProcessLayout,
     pub config: Config,
@@ -80,7 +79,7 @@ impl PythonSpy {
 
         Ok(PythonSpy {
             pid,
-            process: asan::wrap(process),
+            process,
             version,
             addresses,
             #[cfg(feature = "unwind")]
@@ -237,11 +236,9 @@ impl PythonSpy {
             .context("Failed to copy PyThreadState head pointer")?;
 
         // get the threadid of the gil if appropriate
-        let gil_thread_id = get_gil_threadid::<I, PyroscopeSpyProcess>(
-            self.addresses.threadstate_address,
-            &self.process,
-        )
-        .context("failed to get gil_thread_id")?;
+        let gil_thread_id =
+            get_gil_threadid::<I, Process>(self.addresses.threadstate_address, &self.process)
+                .context("failed to get gil_thread_id")?;
 
         let mut did_thread_name_lookup = false;
 
@@ -289,10 +286,7 @@ impl PythonSpy {
         let mut traces = Vec::with_capacity(bufs.threads.len());
         for raw in &bufs.threads {
             let python_thread_id = raw.thread_id;
-            let frames = resolve_frames::<
-                <I::ThreadState as ThreadState>::FrameObject,
-                PyroscopeSpyProcess,
-            >(
+            let frames = resolve_frames::<<I::ThreadState as ThreadState>::FrameObject, Process>(
                 &bufs.frames[raw.frames.clone()],
                 &self.process,
                 self.config.dump_locals > 0,
@@ -379,7 +373,7 @@ impl PythonSpy {
                 if let Some(locals) = frame.locals.as_mut() {
                     let max_length = (128 * self.config.dump_locals) as isize;
                     for local in locals {
-                        let repr = format_variable::<I, PyroscopeSpyProcess>(
+                        let repr = format_variable::<I, Process>(
                             &self.process,
                             &self.version,
                             local.addr,
