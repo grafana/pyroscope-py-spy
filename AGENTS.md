@@ -4,7 +4,8 @@
 
 `grafana/pyroscope-py-spy` is a fork of [benfred/py-spy](https://github.com/benfred/py-spy).
 Its only consumer is [grafana/pyroscope-python](https://github.com/grafana/pyroscope-python),
-which depends on it as a Rust library, pinned by git `rev`, with `default-features = false`.
+which includes it as the `py-spy` Git submodule and uses a Cargo path dependency
+with `default-features = false`. The parent repository pins the submodule commit.
 `remoteprocess` comes from the `grafana/pyroscope-remoteprocess` fork (see `Cargo.toml`).
 
 Nobody ships the `py-spy` binary, the Python wheel, or any of the CLI output formats from
@@ -69,8 +70,8 @@ design around them, optimize them, or file issues whose impact is limited to the
 ## Changing the public API
 
 Anything in "How pyroscope-python uses it" is a contract. Changing it needs a matching
-pyroscope-python change. Downstream picks up fixes by bumping the `rev` in its
-`rust/Cargo.toml` after a merge here.
+pyroscope-python change. Downstream picks up fixes by updating its `py-spy`
+submodule commit after a merge here.
 
 ## Build and test
 
