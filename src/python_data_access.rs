@@ -10,13 +10,16 @@ use crate::utils::offset_of;
 use crate::version::Version;
 use remoteprocess::ProcessMemory;
 
+#[cfg(test)]
+mod string_tests;
+
 /// Copies a string from a target process. Attempts to handle unicode differences, which mostly seems to be working
 pub fn copy_string<T: StringObject, P: ProcessMemory>(
     ptr: *const T,
     process: &P,
     type_checks: &TypeChecks,
 ) -> Result<String, Error> {
-    let obj = process.copy_pointer(ptr)?;
+    let obj = T::copy_header(ptr, process)?;
     type_checks.check_string(process, &obj)?;
     let length = obj.size()?;
     if length >= 4096 {
@@ -708,7 +711,12 @@ pub mod tests {
 
     impl ProcessMemory for FakeStringMemory<'_> {
         fn read(&self, addr: usize, buf: &mut [u8]) -> Result<(), remoteprocess::Error> {
-            if addr == self.header as *const PyUnicodeObject as usize {
+            let header = self.header as *const PyUnicodeObject as usize;
+            if addr >= header
+                && addr
+                    .checked_add(buf.len())
+                    .is_some_and(|end| end <= header + std::mem::size_of::<PyUnicodeObject>())
+            {
                 return LocalProcess.read(addr, buf);
             }
             if addr == self.payload_address && buf.len() <= self.payload.len() {

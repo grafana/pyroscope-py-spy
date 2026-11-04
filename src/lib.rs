@@ -29,6 +29,7 @@ extern crate anyhow;
 #[macro_use]
 extern crate log;
 
+pub mod asan;
 pub mod binary_parser;
 pub mod config;
 #[cfg(all(target_os = "linux", feature = "cli"))]
@@ -39,9 +40,9 @@ mod cython;
 pub mod dump;
 #[cfg(feature = "unwind")]
 mod native_stack_trace;
-mod python_bindings;
+pub mod python_bindings;
 mod python_data_access;
-mod python_interpreters;
+pub mod python_interpreters;
 pub mod python_process_info;
 pub mod python_spy;
 mod python_threading;

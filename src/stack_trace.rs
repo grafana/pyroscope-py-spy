@@ -112,12 +112,15 @@ where
     Ok(ret)
 }
 
-pub(crate) struct RawFrame {
-    frame: usize,
-    code: usize,
-    lasti: i32,
-    is_entry: bool,
-    is_shim_entry: bool,
+/// A recorded Python frame. Addresses may become stale; this does not keep objects alive.
+pub struct RawFrame {
+    /// Python frame address, or zero when resolving without local variables.
+    pub frame: usize,
+    pub code: usize,
+    /// Signed code-unit index on Python 3.10; byte offset from the code object on 3.11+.
+    pub lasti: i32,
+    pub is_entry: bool,
+    pub is_shim_entry: bool,
 }
 
 pub(crate) struct RawThread {
@@ -208,7 +211,7 @@ where
     Ok(())
 }
 
-pub(crate) fn resolve_frames<F, P>(
+pub fn resolve_frames<F, P>(
     raw: &[RawFrame],
     process: &P,
     copy_locals: bool,
@@ -439,6 +442,70 @@ mod tests {
     use crate::python_bindings::v3_7_0::PyCodeObject;
     use crate::python_data_access::tests::to_byteobject;
     use remoteprocess::LocalProcess;
+
+    #[test]
+    fn resolves_code_records_with_qualified_unicode_names_and_line_modes() {
+        use crate::python_bindings::v3_11_0::{_PyInterpreterFrame, PyCodeObject};
+        use crate::python_data_access::tests::{to_asciiobject, to_ucs4object};
+        use crate::python_process_info::Types;
+
+        let mut filename = to_asciiobject("/app/workload.py");
+        let mut name = to_asciiobject("work");
+        let mut qualname = to_ucs4object("Worker.work_\u{1f40d}");
+        let mut table = to_byteobject(&[0xd8, 0, 1]); // one code unit, line delta +1
+        filename.base.ob_base.ob_type = 0x1000 as _;
+        name.base.ob_base.ob_type = 0x1000 as _;
+        qualname.base._base.ob_base.ob_type = 0x1000 as _;
+        let mut code = PyCodeObject {
+            co_filename: (&raw mut filename.base).cast(),
+            co_name: (&raw mut name.base).cast(),
+            co_qualname: (&raw mut qualname.base).cast(),
+            co_linetable: (&raw mut table.base).cast(),
+            co_firstlineno: 40,
+            ..Default::default()
+        };
+        code.ob_base.ob_base.ob_type = 0x2000 as _;
+        let types = TypeChecks::Strict(Types {
+            code: 0x2000,
+            string: 0x1000,
+            dict: 0,
+        });
+        let offset = std::mem::offset_of!(PyCodeObject, co_code_adaptive) as i32;
+        let raw = [RawFrame {
+            frame: 0,
+            code: &code as *const _ as usize,
+            lasti: offset,
+            is_entry: false,
+            is_shim_entry: false,
+        }];
+        for (mode, line) in [
+            (LineNo::NoLine, 0),
+            (LineNo::First, 40),
+            (LineNo::LastInstruction, 41),
+        ] {
+            let frames =
+                resolve_frames::<_PyInterpreterFrame, _>(&raw, &LocalProcess, false, mode, &types)
+                    .unwrap();
+            assert_eq!(frames.len(), 1);
+            assert_eq!(frames[0].name, "Worker.work_\u{1f40d}");
+            assert_eq!(frames[0].filename, "/app/workload.py");
+            assert_eq!(frames[0].line, line);
+            assert!(frames[0].locals.is_none());
+        }
+        let wrong_types = TypeChecks::Strict(Types {
+            code: 0x3000,
+            string: 0x1000,
+            dict: 0,
+        });
+        assert!(resolve_frames::<_PyInterpreterFrame, _>(
+            &raw,
+            &LocalProcess,
+            false,
+            LineNo::First,
+            &wrong_types
+        )
+        .is_err());
+    }
 
     #[test]
     fn test_get_line_number() {
