@@ -2,9 +2,8 @@
 traits for the classes/methods we need and implementations on the bindings objects
 from bindgen.
 
-Note this code is unaware of copying memory from the target process, so the
-pointer addresses here refer to locations in the target process memory space.
-This means we can't dereference them directly.
+Pointer addresses refer to locations in the target process memory space.
+Read them through ProcessMemory rather than dereferencing them directly.
 */
 
 #![allow(clippy::unnecessary_cast)]
@@ -18,6 +17,7 @@ use crate::python_bindings::{
 use crate::python_data_access::{PY_TPFLAGS_BYTES_SUBCLASS, PY_TPFLAGS_STRING_SUBCLASS};
 use crate::utils::offset_of;
 use anyhow::Result;
+use remoteprocess::ProcessMemory;
 
 pub trait InterpreterState: Copy {
     type ThreadState: ThreadState;
@@ -91,6 +91,12 @@ pub trait BytesObject: Copy {
 pub trait StringObject: Copy + Object {
     /// The `tp_flags` bit set on subclasses of this string type
     const SUBCLASS_FLAG: usize;
+
+    /// Copies the metadata used by string decoding. Unused fields may retain
+    /// their default values when the target uses a smaller object layout.
+    fn copy_header<P: ProcessMemory>(ptr: *const Self, process: &P) -> Result<Self> {
+        Ok(process.copy_pointer(ptr)?)
+    }
 
     fn ascii(&self) -> bool;
     fn kind(&self) -> u32;
@@ -414,6 +420,22 @@ macro_rules! Python3Impl {
 
         impl StringObject for $py::PyUnicodeObject {
             const SUBCLASS_FLAG: usize = PY_TPFLAGS_STRING_SUBCLASS;
+
+            fn copy_header<P: ProcessMemory>(ptr: *const Self, process: &P) -> Result<Self> {
+                // Compact strings have an ASCII or compact Unicode header followed
+                // immediately by characters. Copying a full PyUnicodeObject can
+                // overread a short string's allocation. Only the common header and,
+                // for non-compact strings, the external data pointer are needed.
+                let mut obj = Self::default();
+                obj._base._base = process.copy_struct::<$py::PyASCIIObject>(ptr as usize)?;
+                if obj._base._base.state.compact() == 0 {
+                    let address = (ptr as usize)
+                        .checked_add(std::mem::offset_of!(Self, data))
+                        .ok_or_else(|| format_err!("String header address overflow"))?;
+                    obj.data.any = process.copy_struct(address)?;
+                }
+                Ok(obj)
+            }
 
             fn ascii(&self) -> bool {
                 self._base._base.state.ascii() != 0
