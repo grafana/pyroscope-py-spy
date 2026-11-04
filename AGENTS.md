@@ -38,7 +38,7 @@ See `rust/src/lib.rs` and `rust/src/pyspy_backend.rs` in pyroscope-python.
 - `StackTrace` fields read: `pid`, `thread_id`, `thread_name`, `active`, `owns_gil`, `frames`.
 - `Frame` fields read: `name`, `filename`, `module`, `line`. Downstream tests construct
   `Frame` with a struct literal, so adding or removing a `Frame` field breaks them.
-- The Signal profiler also uses `stack_trace::RawFrame::from_code` and
+- The Signal profiler also uses `stack_trace::RawFrame` struct literals and
   `stack_trace::resolve_frames` with the public `python_bindings` frame layouts and
   `python_process_info::TypeChecks::Strict`. It supplies a kindasafe-backed
   `ProcessMemory` reader and resolves names and lines on a background thread,

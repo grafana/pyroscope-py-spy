@@ -112,31 +112,15 @@ where
     Ok(ret)
 }
 
-/// A recorded Python frame, resolved later by [`resolve_frames`].
+/// A recorded Python frame. Addresses may become stale; this does not keep objects alive.
 pub struct RawFrame {
-    frame: usize,
-    code: usize,
-    lasti: i32,
-    is_entry: bool,
-    is_shim_entry: bool,
-}
-
-impl RawFrame {
-    /// Records a code object and instruction without retaining the Python frame.
-    ///
-    /// `lasti` is the signed code-unit index on Python 3.10 and the byte offset
-    /// of the instruction from the start of the code object on Python 3.11+.
-    /// Pass `copy_locals = false` to [`resolve_frames`] for these records.
-    /// Addresses may become stale; resolution does not keep Python objects alive.
-    pub fn from_code(code: usize, lasti: i32) -> Self {
-        Self {
-            frame: 0,
-            code,
-            lasti,
-            is_entry: false,
-            is_shim_entry: false,
-        }
-    }
+    /// Python frame address, or zero when resolving without local variables.
+    pub frame: usize,
+    pub code: usize,
+    /// Signed code-unit index on Python 3.10; byte offset from the code object on 3.11+.
+    pub lasti: i32,
+    pub is_entry: bool,
+    pub is_shim_entry: bool,
 }
 
 pub(crate) struct RawThread {
@@ -213,8 +197,10 @@ where
         if frame.is_python_frame() {
             out.push(RawFrame {
                 frame: frame_ptr as usize,
+                code: frame.code() as usize,
+                lasti: frame.lasti(),
                 is_entry: frame.is_entry(),
-                ..RawFrame::from_code(frame.code() as usize, frame.lasti())
+                is_shim_entry: false,
             });
         } else if out.len() > start {
             out.last_mut().unwrap().is_shim_entry = true;
@@ -225,11 +211,6 @@ where
     Ok(())
 }
 
-/// Resolves recorded frames, innermost first, using the target Python frame layout.
-///
-/// `F` must match the Python version that produced the records. The memory reader
-/// must handle stale addresses. Local variables require records from the frame
-/// walker; use `copy_locals = false` with [`RawFrame::from_code`].
 pub fn resolve_frames<F, P>(
     raw: &[RawFrame],
     process: &P,
@@ -490,7 +471,13 @@ mod tests {
             dict: 0,
         });
         let offset = std::mem::offset_of!(PyCodeObject, co_code_adaptive) as i32;
-        let raw = [RawFrame::from_code(&code as *const _ as usize, offset)];
+        let raw = [RawFrame {
+            frame: 0,
+            code: &code as *const _ as usize,
+            lasti: offset,
+            is_entry: false,
+            is_shim_entry: false,
+        }];
         for (mode, line) in [
             (LineNo::NoLine, 0),
             (LineNo::First, 40),
