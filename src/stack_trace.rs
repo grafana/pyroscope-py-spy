@@ -8,7 +8,8 @@ use serde_derive::Serialize;
 use crate::config::{Config, LineNo};
 use crate::python_data_access::{copy_bytes, copy_string};
 use crate::python_interpreters::{
-    CodeObject, FrameObject, InterpreterState, ThreadState, TupleObject,
+    CodeObject, FrameObject, InterpreterState, NativeThreadId, PythonThreadId, ThreadState,
+    TupleObject,
 };
 use crate::python_process_info::TypeChecks;
 
@@ -18,11 +19,11 @@ pub struct StackTrace {
     /// The process id than generated this stack trace
     pub pid: Pid,
     /// The python thread id for this stack trace
-    pub thread_id: u64,
+    pub thread_id: PythonThreadId,
     // The python thread name for this stack trace
     pub thread_name: Option<String>,
-    /// The OS thread id for this stack tracee
-    pub os_thread_id: Option<u64>,
+    /// The native thread ID stored by CPython 3.11+; None for Python <= 3.10.
+    pub os_thread_id: Option<NativeThreadId>,
     /// Whether or not the thread was active
     pub active: bool,
     /// Whether or not the thread held the GIL
@@ -99,7 +100,7 @@ where
             .context("Failed to copy PyThreadState")?;
 
         let mut trace = get_stack_trace(&thread, process, dump_locals > 0, lineno, type_checks)?;
-        trace.owns_gil = trace.thread_id == gil_thread_id;
+        trace.owns_gil = thread.thread_id() == gil_thread_id;
 
         ret.push(trace);
         // This seems to happen occasionally when scanning BSS addresses for valid interpreters
@@ -270,7 +271,7 @@ impl StackTrace {
         // otherwise use the native threadid if given
         #[cfg(not(target_os = "macos"))]
         match self.os_thread_id {
-            Some(tid) => format!("{}", tid),
+            Some(tid) => format!("{}", tid.0),
             None => format!("{:#X}", self.thread_id),
         }
     }
@@ -332,10 +333,10 @@ fn get_locals<C: CodeObject, F: FrameObject, P: ProcessMemory>(
 pub fn get_gil_threadid<I: InterpreterState, P: ProcessMemory>(
     threadstate_address: usize,
     process: &P,
-) -> Result<u64, Error> {
+) -> Result<PythonThreadId, Error> {
     // happens during initialization when checking to see if we have a valid interpreter (before we've figured out the threadstate_address)
     if threadstate_address == 0 {
-        return Ok(0);
+        return Ok(PythonThreadId(0));
     }
 
     let addr = if I::HAS_GIL_RUNTIME_STATE {
@@ -357,7 +358,7 @@ pub fn get_gil_threadid<I: InterpreterState, P: ProcessMemory>(
         let threadstate: I::ThreadState = process.copy_struct(addr)?;
         threadstate.thread_id()
     } else {
-        0
+        PythonThreadId(0)
     };
 
     Ok(threadid)
@@ -384,6 +385,43 @@ mod tests {
     use crate::python_bindings::v3_7_0::PyCodeObject;
     use crate::python_data_access::tests::to_byteobject;
     use remoteprocess::LocalProcess;
+
+    #[test]
+    fn test_thread_id_output() {
+        for raw_id in [0x1_0000_0002_u64, 42] {
+            let mut trace = StackTrace {
+                pid: 123,
+                thread_id: PythonThreadId(0x1234_5678_9ABC_DEF0),
+                thread_name: None,
+                os_thread_id: Some(NativeThreadId(raw_id)),
+                active: true,
+                owns_gil: false,
+                frames: Vec::new(),
+                process_info: None,
+            };
+            assert_eq!(
+                serde_json::to_value(&trace).unwrap(),
+                serde_json::json!({
+                    "pid": 123,
+                    "thread_id": 0x1234_5678_9ABC_DEF0_u64,
+                    "thread_name": null,
+                    "os_thread_id": raw_id,
+                    "active": true,
+                    "owns_gil": false,
+                    "frames": [],
+                    "process_info": null,
+                })
+            );
+            assert_eq!(format!("{:#X}", trace.thread_id), "0x123456789ABCDEF0");
+            #[cfg(target_os = "macos")]
+            assert_eq!(trace.format_threadid(), "0x123456789ABCDEF0");
+            #[cfg(not(target_os = "macos"))]
+            assert_eq!(trace.format_threadid(), raw_id.to_string());
+            trace.os_thread_id = None;
+            assert_eq!(trace.format_threadid(), "0x123456789ABCDEF0");
+            assert!(serde_json::to_value(&trace).unwrap()["os_thread_id"].is_null());
+        }
+    }
 
     #[test]
     fn test_get_line_number() {
